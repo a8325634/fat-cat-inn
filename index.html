@@ -1,0 +1,665 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>肥貓客棧 - 數位目錄</title>
+  
+  <!-- 載入 Tailwind CSS (排版與樣式) -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  
+  <!-- 載入 FontAwesome 圖示庫 -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  
+  <!-- 載入 React 核心 (透過 CDN 直接在 HTML 執行) -->
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+  <style>
+    /* 隱藏滾動條但保留滾動功能 */
+    .hide-scrollbar::-webkit-scrollbar { display: none; }
+    .hide-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+    /* 進場動畫 */
+    @keyframes slide-up { from { transform: translateY(100%); } to { transform: translateY(0); } }
+    .animate-slide-up { animation: slide-up 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
+    @keyframes scale-in { from { transform: scale(0.95); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+    .animate-scale-in { animation: scale-in 0.2s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
+  </style>
+</head>
+<body class="bg-amber-50">
+  <div id="root"></div>
+
+  <!-- 主要應用程式程式碼 (加上 data-type="module" 以支援 Firebase 模組載入) -->
+  <script type="text/babel" data-type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+    import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+    import { getFirestore, collection, doc, setDoc, getDoc, onSnapshot, addDoc, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+    /* ==============================================================================
+     * 【版本公告與更新日誌】
+     * ==============================================================================
+     * 版本: V1.3.0 (Firebase 雲端資料庫版)
+     * 日期: 2026-03-25
+     * * 【V1.0.0 基礎建設】
+     * 1. 建立基礎數位目錄架構。
+     * 2. 實作響應式設計自動適應各種手機螢幕大小。
+     * 3. 內建快速搜尋與貨運編號查詢介面。
+     * * 【V1.1.0 更新內容】
+     * 1. 支援「多重分類」：商品分類可用斜線(/)隔開。
+     * 2. 動態生成主分類與次分類：完全依賴 Google Sheets 資料自動產生標籤。
+     * 3. 購物車優化：新增滿額免運提示。
+     * * 【V1.2.0 & V1.2.1 更新內容】
+     * 1. 轉為單一 HTML 檔案，直接放上 GitHub 即可運行。
+     * 2. 購物車按鈕拆分為「查看購物車」與「去結帳」。
+     * 3. 修正 Google Sheets 雙引號解析問題，確保價格正確。
+     * 4. 加入 LINE 官方帳號自動跳轉功能：送出訂單後，自動開啟 LINE APP。
+     * * 【V1.3.0 更新內容 (本次更新)】
+     * 1. 重新整合 Firebase 雲端資料庫，確保所有顧客收件資訊與訂單皆安全儲存於雲端。
+     * ============================================================================== */
+
+    const { useState, useEffect, useMemo } = React;
+
+    // ============================================================================
+    // 【全域設定區】(上線前請修改這裡的設定)
+    // ============================================================================
+    
+    // 1. 【超重要】你的 LINE 官方帳號 ID (記得包含 @)
+    const LINE_OA_ID = '@your_line_id'; // <--- 請改成你的 LINE ID，例如 '@fatcat123'
+
+    // 2. 你的 Google Sheets CSV 網址
+    const GOOGLE_SHEETS_CSV_URL = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vT3tuEXDRx7MqpS-7LPlZ1PC0BuxjPOOg28bR-bHIV3sXYNEKhjroZG6IaYoonoWQ0eB-qamSXcP3dD/pub?output=csv';
+    
+    // 3. 系統開關與門檻
+    const ENABLE_ORDER_SUBMIT = true; 
+    const FREE_SHIPPING_THRESHOLD = 1500;
+
+    // 預設測試資料 (當 Google Sheet 失效或未填寫時顯示)
+    const MOCK_CSV_DATA = `動物分類,商品分類,商品名稱,圖片網址,商品描述,規格與價格與條碼\n貓貓,飼料/泌尿道保健,皇家 貓用泌尿道處方飼料,https://placehold.co/800x800/ffedd5/f97316?text=Cat+Food,專為貓咪泌尿道健康設計,1.5kg,850,BARCODE-CAT-001|3kg,1550,BARCODE-CAT-002`;
+
+    // ============================================================================
+    // 【Firebase 初始化設定】
+    // ============================================================================
+    const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+    const app = Object.keys(firebaseConfig).length > 0 ? initializeApp(firebaseConfig) : null;
+    const auth = app ? getAuth(app) : null;
+    const db = app ? getFirestore(app) : null;
+    const appId = typeof __app_id !== 'undefined' ? __app_id : 'fat-cat-inn-default';
+
+    // 彈窗組件
+    const Toast = ({ message, onClose }) => {
+      if (!message) return null;
+      return (
+        <div className="fixed top-4 left-1/2 transform -translate-x-1/2 z-50 bg-gray-800 text-white px-6 py-3 rounded-full shadow-lg flex items-center gap-3">
+          <span>{message}</span>
+          <button onClick={onClose} className="p-1 hover:bg-gray-700 rounded-full transition-colors"><i className="fas fa-times"></i></button>
+        </div>
+      );
+    };
+
+    function App() {
+      // 狀態管理
+      const [user, setUser] = useState(null); 
+      const [userProfile, setUserProfile] = useState({ name: '', phone: '', address: '' });
+      const [orders, setOrders] = useState([]);
+      
+      const [products, setProducts] = useState([]);
+      const [activeTab, setActiveTab] = useState('');
+      const [activeCategory, setActiveCategory] = useState('全部');
+      const [searchQuery, setSearchQuery] = useState('');
+      const [cart, setCart] = useState([]);
+      
+      const [showCart, setShowCart] = useState(false);
+      const [showHistory, setShowHistory] = useState(false);
+      const [toastMessage, setToastMessage] = useState('');
+
+      // ============================================================================
+      // 【初始化與資料載入】
+      // ============================================================================
+
+      // 1. Firebase 登入與監聽
+      useEffect(() => {
+        if (!auth) return;
+        const initAuth = async () => {
+          try {
+            if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+              await signInWithCustomToken(auth, __initial_auth_token);
+            } else {
+              await signInAnonymously(auth);
+            }
+          } catch (error) {
+            console.error("登入失敗:", error);
+          }
+        };
+        initAuth();
+        const unsubscribe = onAuthStateChanged(auth, setUser);
+        return () => unsubscribe();
+      }, []);
+
+      // 2. 載入 Google Sheets 資料
+      useEffect(() => {
+        const loadData = async () => {
+          try {
+            let csvText = '';
+            if (GOOGLE_SHEETS_CSV_URL) {
+              const response = await fetch(GOOGLE_SHEETS_CSV_URL);
+              csvText = await response.text();
+            } else {
+              csvText = MOCK_CSV_DATA;
+            }
+
+            const lines = csvText.split('\n').filter(line => line.trim() !== '');
+            if (lines.length <= 1) return;
+
+            // 處理雙引號包夾的逗號問題
+            const parseCSVLine = (text) => {
+              return text.split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/).map(col => col.replace(/^"|"$/g, '').replace(/""/g, '"').trim());
+            };
+
+            const parsedProducts = lines.slice(1).map((line, index) => {
+              const cols = parseCSVLine(line); 
+              const variantsRaw = cols[5] || '';
+              
+              const variants = variantsRaw.split('|').map(v => {
+                const [vName, vPrice, vBarcode] = v.split(',');
+                return {
+                  name: vName ? vName.trim() : '預設規格',
+                  price: parseInt(vPrice) || 0,
+                  barcode: vBarcode ? vBarcode.trim() : '' 
+                };
+              });
+
+              return {
+                id: `prod_${index}`,
+                animal: cols[0] ? cols[0].trim() : '未分類', 
+                category: cols[1] ? cols[1].split('/').map(c => c.trim()) : ['未分類'], 
+                name: cols[2] ? cols[2].trim() : '未命名商品',
+                image: cols[3] ? cols[3].trim() : 'https://placehold.co/800',
+                description: cols[4] ? cols[4].trim() : '',
+                variants: variants.length > 0 && variants[0].name !== '預設規格' ? variants : [{name: '單一規格', price: 0, barcode: ''}]
+              };
+            });
+            setProducts(parsedProducts);
+          } catch (error) {
+            console.error("載入商品資料失敗:", error);
+            showToast("商品資料載入失敗，請檢查網址。");
+          }
+        };
+        loadData();
+      }, []);
+
+      // 3. 從 Firebase 載入客人的資料與歷史訂單
+      useEffect(() => {
+        if (!user || !db) return;
+
+        const fetchProfile = async () => {
+          try {
+            const profileRef = doc(db, 'artifacts', appId, 'users', user.uid, 'profiles', 'default');
+            const docSnap = await getDoc(profileRef);
+            if (docSnap.exists()) {
+              setUserProfile(docSnap.data());
+            }
+          } catch (error) {
+            console.error("讀取個人資料失敗:", error);
+          }
+        };
+        fetchProfile();
+
+        const ordersRef = collection(db, 'artifacts', appId, 'users', user.uid, 'orders');
+        const unsubscribeOrders = onSnapshot(ordersRef, (snapshot) => {
+          const fetchedOrders = [];
+          snapshot.forEach(doc => {
+            fetchedOrders.push({ id: doc.id, ...doc.data() });
+          });
+          fetchedOrders.sort((a, b) => {
+            const timeA = a.createdAt?.toMillis ? a.createdAt.toMillis() : 0;
+            const timeB = b.createdAt?.toMillis ? b.createdAt.toMillis() : 0;
+            return timeB - timeA;
+          });
+          setOrders(fetchedOrders);
+        }, (error) => {
+          console.error("讀取訂單失敗:", error);
+        });
+
+        return () => unsubscribeOrders();
+      }, [user]);
+
+      // ============================================================================
+      // 【資料過濾邏輯】
+      // ============================================================================
+      const availableMainTabs = useMemo(() => {
+        return [...new Set(products.map(p => p.animal))];
+      }, [products]);
+
+      useEffect(() => {
+        if (availableMainTabs.length > 0 && !availableMainTabs.includes(activeTab)) {
+          setActiveTab(availableMainTabs[0]);
+        }
+      }, [availableMainTabs, activeTab]);
+
+      const filteredProducts = useMemo(() => {
+        return products.filter(p => {
+          if (p.animal !== activeTab) return false;
+          if (activeCategory !== '全部' && !p.category.includes(activeCategory)) return false;
+          if (searchQuery && !p.name.toLowerCase().includes(searchQuery.toLowerCase())) return false;
+          return true;
+        });
+      }, [products, activeTab, activeCategory, searchQuery]);
+
+      const availableCategories = useMemo(() => {
+        const categories = new Set(products.filter(p => p.animal === activeTab).flatMap(p => p.category));
+        return ['全部', ...Array.from(categories)];
+      }, [products, activeTab]);
+
+      // ============================================================================
+      // 【操作功能函數】
+      // ============================================================================
+      const showToast = (msg) => {
+        setToastMessage(msg);
+        setTimeout(() => setToastMessage(''), 3000);
+      };
+
+      const addToCart = (product, selectedVariantIndex) => {
+        const variant = product.variants[selectedVariantIndex];
+        if (!variant) return;
+
+        setCart(prev => {
+          const existingItemIndex = prev.findIndex(item => item.productId === product.id && item.variant.barcode === variant.barcode);
+          if (existingItemIndex >= 0) {
+            const newCart = [...prev];
+            newCart[existingItemIndex].quantity += 1;
+            return newCart;
+          } else {
+            return [...prev, { 
+              productId: product.id, 
+              name: product.name, 
+              image: product.image,
+              variant: variant, 
+              quantity: 1 
+            }];
+          }
+        });
+        showToast(`已將 ${product.name} 加入購物車！`);
+      };
+
+      const updateCartQuantity = (index, delta) => {
+        setCart(prev => {
+          const newCart = [...prev];
+          newCart[index].quantity += delta;
+          if (newCart[index].quantity <= 0) {
+            newCart.splice(index, 1);
+          }
+          return newCart;
+        });
+      };
+
+      const cartTotal = cart.reduce((sum, item) => sum + (item.variant.price * item.quantity), 0);
+      const cartTotalQuantity = cart.reduce((sum, item) => sum + item.quantity, 0);
+
+      // 儲存訂單到 Firebase 並傳送 LINE 訊息
+      const submitOrder = async () => {
+        if (!user || !db) {
+          showToast("系統連線中，請稍候...");
+          return;
+        }
+        if (!userProfile.name || !userProfile.phone || !userProfile.address) {
+          showToast("請填寫完整的收件資訊！");
+          return;
+        }
+
+        try {
+          // 儲存收件資料到 Firestore
+          const profileRef = doc(db, 'artifacts', appId, 'users', user.uid, 'profiles', 'default');
+          await setDoc(profileRef, userProfile);
+
+          // 產生新訂單紀錄儲存到 Firestore
+          const newOrder = {
+            items: cart,
+            totalAmount: cartTotal,
+            recipient: userProfile,
+            status: '處理中',
+            trackingNumber: '',
+            createdAt: serverTimestamp()
+          };
+          
+          const ordersRef = collection(db, 'artifacts', appId, 'users', user.uid, 'orders');
+          await addDoc(ordersRef, newOrder);
+
+          // 產生要傳給 LINE OA 的純文字訊息
+          let lineMessageText = `【肥貓客棧 - 新訂單】\n`;
+          lineMessageText += `訂購人：${userProfile.name}\n`;
+          lineMessageText += `電話：${userProfile.phone}\n`;
+          lineMessageText += `地址：${userProfile.address}\n`;
+          lineMessageText += `------------------\n`;
+          cart.forEach((item, idx) => {
+            lineMessageText += `${idx+1}. ${item.name} (${item.variant.name}) x${item.quantity}\n`;
+            lineMessageText += `   小計: $${item.variant.price * item.quantity}\n`;
+            lineMessageText += `   [條碼: ${item.variant.barcode}]\n`; 
+          });
+          lineMessageText += `------------------\n`;
+          lineMessageText += `總計金額：$${cartTotal}`;
+
+          // 清空購物車與視窗
+          setCart([]);
+          setShowCart(false);
+
+          // 自動跳轉至 LINE 官方帳號並貼上訊息
+          showToast("訂單已產生！正在為您跳轉至 LINE...");
+          setTimeout(() => {
+            const encodedMessage = encodeURIComponent(lineMessageText);
+            window.location.href = `https://line.me/R/oaMessage/${LINE_OA_ID}/?${encodedMessage}`;
+          }, 1500);
+
+        } catch (error) {
+          console.error("送出訂單發生錯誤:", error);
+          showToast("送出失敗，請稍後再試。");
+        }
+      };
+
+      const ProductCard = ({ product }) => {
+        const [selectedVariantIdx, setSelectedVariantIdx] = useState(0);
+        const currentVariant = product.variants[selectedVariantIdx];
+
+        return (
+          <div className="bg-white rounded-2xl shadow-sm border border-orange-100 overflow-hidden flex flex-col hover:shadow-md transition-shadow">
+            <div className="aspect-square w-full bg-gray-100 relative">
+              <img 
+                src={product.image} 
+                alt={product.name}
+                className="w-full h-full object-cover"
+                onError={(e) => { e.target.src = 'https://placehold.co/800x800/e2e8f0/64748b?text=Image+Error' }}
+              />
+            </div>
+            <div className="p-4 flex flex-col flex-grow">
+              <div className="text-xs text-orange-600 font-medium mb-1">{product.category.join('、')}</div>
+              <h3 className="font-bold text-gray-800 text-lg leading-tight mb-2 flex-grow">{product.name}</h3>
+              <p className="text-sm text-gray-500 mb-4 line-clamp-2">{product.description}</p>
+              
+              <div className="mb-4">
+                <label className="block text-xs text-gray-500 mb-1">選擇規格：</label>
+                <select 
+                  className="w-full border border-gray-300 rounded-lg p-2 text-sm focus:ring-2 focus:ring-orange-300 outline-none"
+                  value={selectedVariantIdx}
+                  onChange={(e) => setSelectedVariantIdx(parseInt(e.target.value))}
+                >
+                  {product.variants.map((v, idx) => (
+                    <option key={idx} value={idx}>{v.name} - ${v.price}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="flex items-center justify-between mt-auto">
+                <span className="text-xl font-bold text-orange-600">${currentVariant?.price || 0}</span>
+                <button 
+                  onClick={() => addToCart(product, selectedVariantIdx)}
+                  className="bg-orange-500 hover:bg-orange-600 text-white p-2 rounded-xl transition-colors flex items-center justify-center w-10 h-10"
+                >
+                  <i className="fas fa-cart-plus"></i>
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      };
+
+      return (
+        <div className={`min-h-screen bg-amber-50 font-sans text-gray-800 ${cart.length > 0 ? 'pb-28' : 'pb-6'} md:pb-0`}>
+          <Toast message={toastMessage} onClose={() => setToastMessage('')} />
+
+          <header className="bg-white shadow-sm sticky top-0 z-30">
+            <div className="max-w-4xl mx-auto px-4 py-3 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <div className="bg-orange-100 p-2 rounded-xl text-orange-600 flex items-center justify-center w-10 h-10">
+                  <i className="fas fa-store text-lg"></i>
+                </div>
+                <h1 className="text-xl font-black tracking-wider text-gray-800">肥貓客棧</h1>
+              </div>
+              
+              <div className="flex gap-3">
+                <button onClick={() => setShowHistory(true)} className="p-2 text-gray-500 hover:bg-orange-50 rounded-full transition-colors relative w-10 h-10 flex items-center justify-center">
+                  <i className="fas fa-clock-rotate-left text-lg"></i>
+                </button>
+              </div>
+            </div>
+
+            <div className="max-w-4xl mx-auto px-4 pb-3">
+              <div className="relative">
+                <i className="fas fa-search absolute left-4 top-1/2 transform -translate-y-1/2 text-gray-400"></i>
+                <input 
+                  type="text" 
+                  placeholder="搜尋商品關鍵字..." 
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  className="w-full bg-gray-100 border-transparent focus:bg-white focus:border-orange-300 focus:ring-2 focus:ring-orange-200 rounded-xl py-2 pl-10 pr-4 outline-none transition-all"
+                />
+              </div>
+            </div>
+
+            <div className="flex w-full border-t border-gray-100 overflow-x-auto hide-scrollbar bg-white">
+              {availableMainTabs.map(tab => (
+                <button 
+                  key={tab}
+                  className={`min-w-[100px] flex-1 shrink-0 py-3 px-2 text-center font-bold flex items-center justify-center gap-2 transition-colors whitespace-nowrap ${activeTab === tab ? 'bg-orange-100 text-orange-700 border-b-2 border-orange-500' : 'text-gray-500 hover:bg-gray-50'}`}
+                  onClick={() => { setActiveTab(tab); setActiveCategory('全部'); }}
+                >
+                  {tab.includes('貓') ? <i className="fas fa-cat"></i> : (tab.includes('狗') ? <i className="fas fa-dog"></i> : <i className="fas fa-box-open"></i>)}
+                  {tab}
+                </button>
+              ))}
+            </div>
+          </header>
+
+          <main className="max-w-4xl mx-auto px-4 py-6">
+            <div className="flex flex-wrap gap-2 mb-6">
+              {availableCategories.map(cat => (
+                <button
+                  key={cat}
+                  onClick={() => setActiveCategory(cat)}
+                  className={`whitespace-nowrap px-5 py-2 rounded-full text-sm font-medium transition-colors ${
+                    activeCategory === cat 
+                      ? (activeTab === '貓貓' ? 'bg-orange-500 text-white shadow-md' : 'bg-blue-500 text-white shadow-md') 
+                      : 'bg-white text-gray-600 border border-gray-200 hover:bg-gray-50'
+                  }`}
+                >
+                  {cat}
+                </button>
+              ))}
+            </div>
+
+            {filteredProducts.length === 0 ? (
+              <div className="text-center py-20 text-gray-400 flex flex-col items-center">
+                <i className="fas fa-box-open text-4xl mb-4 opacity-50"></i>
+                <p>找不到符合條件的商品</p>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                {filteredProducts.map(product => (
+                  <ProductCard key={product.id} product={product} />
+                ))}
+              </div>
+            )}
+          </main>
+
+          {cart.length > 0 && !showCart && (
+            <div className="fixed bottom-0 left-0 w-full bg-white border-t border-orange-200 shadow-[0_-10px_20px_rgba(0,0,0,0.05)] z-30 px-4 py-3 animate-slide-up">
+              <div className="max-w-4xl mx-auto flex items-center justify-between">
+                <div className="flex flex-col">
+                  <div className="flex items-end gap-2">
+                    <span className="text-sm text-gray-500">共 {cartTotalQuantity} 件</span>
+                    <span className="text-2xl font-black text-orange-600">${cartTotal}</span>
+                  </div>
+                  <div className="text-xs font-bold mt-1">
+                    {cartTotal >= FREE_SHIPPING_THRESHOLD ? (
+                      <span className="text-green-600 bg-green-50 px-2 py-0.5 rounded">🎉 已達免運門檻</span>
+                    ) : (
+                      <span className="text-red-500 bg-red-50 px-2 py-0.5 rounded">🚚 還差 ${FREE_SHIPPING_THRESHOLD - cartTotal} 免運</span>
+                    )}
+                  </div>
+                </div>
+                
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => setShowCart(true)}
+                    className="bg-orange-50 hover:bg-orange-100 text-orange-600 px-4 py-3 rounded-xl font-bold border border-orange-200 transition-colors flex items-center justify-center gap-2"
+                    title="查看或修改購物車"
+                  >
+                    <i className="fas fa-shopping-cart text-lg"></i>
+                    <span className="hidden sm:inline">購物車</span>
+                  </button>
+                  <button
+                    onClick={() => setShowCart(true)}
+                    className="bg-orange-500 hover:bg-orange-600 text-white px-6 py-3 rounded-xl font-bold shadow-md shadow-orange-200 transition-colors flex items-center justify-center whitespace-nowrap text-lg"
+                  >
+                    去結帳
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {showCart && (
+            <div className="fixed inset-0 bg-black/50 z-50 flex justify-center items-end md:items-center p-0 md:p-4 backdrop-blur-sm transition-opacity">
+              <div className="bg-white w-full max-w-lg md:rounded-3xl rounded-t-3xl h-[85vh] md:h-auto max-h-[90vh] flex flex-col overflow-hidden shadow-2xl animate-slide-up md:animate-scale-in">
+                <div className="p-4 border-b border-gray-100 flex justify-between items-center bg-gray-50">
+                  <h2 className="text-xl font-bold flex items-center gap-2"><i className="fas fa-shopping-cart"></i> 購物車</h2>
+                  <button onClick={() => setShowCart(false)} className="p-2 bg-gray-200 rounded-full hover:bg-gray-300 transition-colors w-8 h-8 flex items-center justify-center"><i className="fas fa-times"></i></button>
+                </div>
+                
+                <div className="flex-1 overflow-y-auto p-4 hide-scrollbar">
+                  {cart.length === 0 ? (
+                    <div className="text-center py-10 text-gray-400">購物車空空的耶</div>
+                  ) : (
+                    <div className="space-y-4">
+                      {cart.map((item, index) => (
+                        <div key={index} className="flex gap-3 bg-white p-3 border border-gray-100 rounded-xl shadow-sm">
+                          <div className="w-16 h-16 bg-gray-100 rounded-lg overflow-hidden flex-shrink-0">
+                            <img src={item.image} alt={item.name} className="w-full h-full object-cover" onError={(e) => { e.target.src = 'https://placehold.co/100' }} />
+                          </div>
+                          <div className="flex-1 flex flex-col justify-between">
+                            <div>
+                              <div className="font-bold text-sm text-gray-800 line-clamp-1">{item.name}</div>
+                              <div className="text-xs text-gray-500">{item.variant.name}</div>
+                            </div>
+                            <div className="flex items-center justify-between mt-2">
+                              <div className="text-orange-600 font-bold">${item.variant.price}</div>
+                              <div className="flex items-center gap-3 bg-gray-50 rounded-lg p-1 border border-gray-200">
+                                <button onClick={() => updateCartQuantity(index, -1)} className="p-1 hover:bg-white rounded shadow-sm text-gray-600 w-6 h-6 flex justify-center items-center"><i className="fas fa-minus text-xs"></i></button>
+                                <span className="text-sm font-medium w-4 text-center">{item.quantity}</span>
+                                <button onClick={() => updateCartQuantity(index, 1)} className="p-1 hover:bg-white rounded shadow-sm text-gray-600 w-6 h-6 flex justify-center items-center"><i className="fas fa-plus text-xs"></i></button>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                      
+                      {ENABLE_ORDER_SUBMIT && (
+                        <div className="mt-6 border-t border-gray-200 pt-6">
+                          <h3 className="font-bold mb-4 flex items-center gap-2"><i className="fas fa-circle-info"></i> 收件資訊填寫</h3>
+                          <div className="space-y-3">
+                            <input type="text" placeholder="收件人姓名" value={userProfile.name} onChange={e => setUserProfile({...userProfile, name: e.target.value})} className="w-full p-3 border border-gray-300 rounded-xl outline-none focus:ring-2 focus:ring-orange-300" />
+                            <input type="tel" placeholder="聯絡電話" value={userProfile.phone} onChange={e => setUserProfile({...userProfile, phone: e.target.value})} className="w-full p-3 border border-gray-300 rounded-xl outline-none focus:ring-2 focus:ring-orange-300" />
+                            <textarea placeholder="配送地址或門市資訊" value={userProfile.address} onChange={e => setUserProfile({...userProfile, address: e.target.value})} className="w-full p-3 border border-gray-300 rounded-xl outline-none focus:ring-2 focus:ring-orange-300 resize-none h-20" />
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                <div className="p-4 bg-white border-t border-gray-100 shadow-[0_-10px_15px_-3px_rgba(0,0,0,0.05)]">
+                  <div className="flex justify-between items-end mb-4">
+                    <div className="flex flex-col">
+                      <span className="text-gray-500 font-medium text-sm mb-1">共 {cartTotalQuantity} 件商品</span>
+                      <div className="text-xs font-bold">
+                        {cartTotal >= FREE_SHIPPING_THRESHOLD ? (
+                          <span className="text-green-600 bg-green-50 px-2 py-0.5 rounded">🎉 已達免運門檻</span>
+                        ) : (
+                          <span className="text-red-500 bg-red-50 px-2 py-0.5 rounded">🚚 還差 ${FREE_SHIPPING_THRESHOLD - cartTotal} 免運</span>
+                        )}
+                      </div>
+                    </div>
+                    <div className="text-right">
+                      <span className="text-gray-500 text-sm mr-2">總計</span>
+                      <span className="text-3xl font-black text-orange-600">${cartTotal}</span>
+                    </div>
+                  </div>
+                  {ENABLE_ORDER_SUBMIT ? (
+                    <button 
+                      onClick={submitOrder}
+                      disabled={cart.length === 0}
+                      className={`w-full py-4 rounded-xl font-bold text-lg transition-colors flex justify-center items-center gap-2 ${cart.length === 0 ? 'bg-gray-200 text-gray-400 cursor-not-allowed' : 'bg-orange-500 hover:bg-orange-600 text-white shadow-lg shadow-orange-200'}`}
+                    >
+                      確認送出訂單
+                    </button>
+                  ) : (
+                    <div className="w-full py-4 bg-gray-100 text-gray-500 rounded-xl text-center text-sm font-medium">
+                      目前為展示模式，暫未開放下單功能
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {showHistory && (
+            <div className="fixed inset-0 bg-black/50 z-50 flex justify-center items-end md:items-center p-0 md:p-4 backdrop-blur-sm transition-opacity">
+              <div className="bg-white w-full max-w-lg md:rounded-3xl rounded-t-3xl h-[85vh] md:h-auto max-h-[90vh] flex flex-col overflow-hidden shadow-2xl">
+                <div className="p-4 border-b border-gray-100 flex justify-between items-center bg-gray-50">
+                  <h2 className="text-xl font-bold flex items-center gap-2"><i className="fas fa-clock-rotate-left"></i> 歷史訂單</h2>
+                  <button onClick={() => setShowHistory(false)} className="p-2 bg-gray-200 rounded-full hover:bg-gray-300 transition-colors w-8 h-8 flex items-center justify-center"><i className="fas fa-times"></i></button>
+                </div>
+                
+                <div className="flex-1 overflow-y-auto p-4 bg-gray-50 hide-scrollbar">
+                  {orders.length === 0 ? (
+                    <div className="text-center py-10 text-gray-400">目前還沒有訂單紀錄唷</div>
+                  ) : (
+                    <div className="space-y-4">
+                      {orders.map(order => (
+                        <div key={order.id} className="bg-white p-4 rounded-2xl shadow-sm border border-gray-100">
+                          <div className="flex justify-between items-center mb-3 pb-2 border-b border-gray-50">
+                            <span className="text-xs text-gray-400">
+                              {order.createdAt?.toMillis ? new Date(order.createdAt.toMillis()).toLocaleString('zh-TW') : '剛剛'}
+                            </span>
+                            <span className={`text-xs px-2 py-1 rounded-md font-bold ${order.status === '處理中' ? 'bg-blue-50 text-blue-600' : 'bg-green-50 text-green-600'}`}>
+                              {order.status}
+                            </span>
+                          </div>
+                          
+                          <div className="space-y-2 mb-3">
+                            {order.items.map((item, idx) => (
+                              <div key={idx} className="flex justify-between text-sm">
+                                <span className="text-gray-700 truncate pr-2">{item.name} <span className="text-xs text-gray-400">({item.variant.name})</span> x{item.quantity}</span>
+                                <span className="text-gray-900 font-medium">${item.variant.price * item.quantity}</span>
+                              </div>
+                            ))}
+                          </div>
+
+                          <div className="flex justify-between items-center pt-3 border-t border-gray-50 font-bold">
+                            <span className="text-sm text-gray-600">總計</span>
+                            <span className="text-orange-600">${order.totalAmount}</span>
+                          </div>
+
+                          {order.trackingNumber && (
+                            <div className="mt-3 bg-gray-50 p-2 rounded-lg text-sm border border-gray-200 flex items-center gap-2">
+                              <i className="fas fa-box-open text-gray-500"></i>
+                              <span className="text-gray-600">貨運編號：</span>
+                              <span className="font-bold tracking-wider text-gray-800">{order.trackingNumber}</span>
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<App />);
+  </script>
+</body>
+</html>
