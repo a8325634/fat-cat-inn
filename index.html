@@ -32,18 +32,14 @@
     /* ==============================================================================
      * 【版本公告與更新日誌】
      * ==============================================================================
-     * 版本: V1.4.0 (LIFF 專業版)
-     * 日期: 2026-03-25
+     * 版本: V1.4.5 (獨立品牌專區)
+     * 日期: 2026-03-26
      * * 【歷史更新簡要】
-     * - V1.0-V1.2: 基礎建設、多重分類、純 HTML 單檔化、修正 CSV 雙引號。
-     * - V1.3: 重新整合 Firebase 雲端資料庫。
-     * * 【V1.4.0 更新內容 (本次更新)】
-     * 1. 導入 LINE LIFF SDK，實現在 LINE APP 內無縫開啟與操作。
-     * 2. 結帳功能改用 liff.sendMessages()，可直接代替使用者在官方帳號對話框中發送訂單資訊。
-     * 3. 訂單發送成功後，自動關閉 LIFF 視窗 (liff.closeWindow())，提升操作流暢度。
-     * ============================================================================== */
-    /* ==============================================================================
-     * 【版本公告】V1.4.2 (加入 LIFF 狀態偵測燈與終極 CSV 雙引號修復)
+     * - V1.0-V1.3: 基礎建設、多重分類、純 HTML 單檔化、Firebase 雲端資料庫。
+     * - V1.4.0-V1.4.3: 導入 LINE LIFF SDK 與狀態燈、UI優化。
+     * - V1.4.4: 升級「大分類(A欄)」支援多重標籤。
+     * * 【V1.4.5 更新內容 (本次更新)】
+     * 1. 獨立出真正的「品牌區」功能！只需在 Google Sheets 新增 G 欄 (第7欄) 填入「商品品牌」，系統就會自動彙整所有品牌，並產生專屬的品牌大分類與過濾標籤。
      * ============================================================================== */
     const { useState, useEffect, useMemo } = React;
 
@@ -62,6 +58,9 @@
     
     const ENABLE_ORDER_SUBMIT = true; 
     const FREE_SHIPPING_THRESHOLD = 1500;
+
+    // 為了預覽時不報錯，加入第 7 欄的示範資料
+    const MOCK_CSV_DATA = `動物分類,商品分類,商品名稱,圖片網址,商品描述,規格與價格與條碼,商品品牌\n貓貓,飼料/泌尿道保健,皇家 貓用泌尿道處方飼料,https://placehold.co/800x800/ffedd5/f97316?text=Cat+Food,專為貓咪泌尿道健康設計,1.5kg,850,BARCODE-CAT-001|3kg,1550,BARCODE-CAT-002,法國皇家`;
 
     // ============================================================================
     // ⚠️ 【請在此處填寫你的 Firebase 金鑰】 ⚠️
@@ -186,12 +185,14 @@
 
               return {
                 id: `prod_${index}`,
-                animal: cols[0] ? cols[0].trim() : '未分類', 
+                animals: cols[0] ? cols[0].split('/').map(a => a.trim()) : ['未分類'], 
                 category: cols[1] ? cols[1].split('/').map(c => c.trim()) : ['未分類'], 
                 name: cols[2] ? cols[2].trim() : '未命名商品',
                 image: cols[3] ? cols[3].trim() : 'https://placehold.co/800',
                 description: cols[4] ? cols[4].trim() : '',
-                variants: variants.length > 0 && variants[0].name !== '預設規格' ? variants : [{name: '單一規格', price: 0, barcode: ''}]
+                variants: variants.length > 0 && variants[0].name !== '預設規格' ? variants : [{name: '單一規格', price: 0, barcode: ''}],
+                // 【新增】讀取 G 欄 (第7欄) 作為商品品牌
+                brand: cols[6] ? cols[6].trim() : ''
               };
             });
             setProducts(parsedProducts);
@@ -234,8 +235,16 @@
         return () => unsubscribeOrders();
       }, [user]);
 
+      // 【更新】動態產生大分類 (含品牌區)
       const availableMainTabs = useMemo(() => {
-        return [...new Set(products.map(p => p.animal))];
+        // 先抓出所有 A 欄的動物分類 (並過濾掉可能誤填的'品牌區'以防重複)
+        const tabs = [...new Set(products.flatMap(p => p.animals).filter(a => a !== '品牌區'))];
+        
+        // 只要有任何商品填寫了 G 欄的「品牌」，就在最後面獨立加上「品牌區」按鈕
+        if (products.some(p => p.brand)) {
+          tabs.push('品牌區');
+        }
+        return tabs;
       }, [products]);
 
       useEffect(() => {
@@ -244,19 +253,35 @@
         }
       }, [availableMainTabs, activeTab]);
 
+      // 【更新】動態產生次分類 (依據是否在品牌區)
+      const availableCategories = useMemo(() => {
+        if (activeTab === '品牌區') {
+          // 如果大分類點選的是「品牌區」，小分類就列出所有的「品牌名稱」
+          const brands = new Set(products.map(p => p.brand).filter(b => b));
+          return ['全部', ...Array.from(brands)];
+        }
+        // 否則列出該動物分類下的小分類
+        const categories = new Set(products.filter(p => p.animals.includes(activeTab)).flatMap(p => p.category));
+        return ['全部', ...Array.from(categories)];
+      }, [products, activeTab]);
+
+      // 【更新】過濾顯示的商品 (依據是否在品牌區)
       const filteredProducts = useMemo(() => {
         return products.filter(p => {
-          if (p.animal !== activeTab) return false;
-          if (activeCategory !== '全部' && !p.category.includes(activeCategory)) return false;
+          if (activeTab === '品牌區') {
+            // 在品牌區時，以品牌來過濾
+            if (!p.brand) return false;
+            if (activeCategory !== '全部' && p.brand !== activeCategory) return false;
+          } else {
+            // 在一般動物分類時，以動物與商品分類來過濾
+            if (!p.animals.includes(activeTab)) return false;
+            if (activeCategory !== '全部' && !p.category.includes(activeCategory)) return false;
+          }
+          // 搜尋關鍵字判斷
           if (searchQuery && !p.name.toLowerCase().includes(searchQuery.toLowerCase())) return false;
           return true;
         });
       }, [products, activeTab, activeCategory, searchQuery]);
-
-      const availableCategories = useMemo(() => {
-        const categories = new Set(products.filter(p => p.animal === activeTab).flatMap(p => p.category));
-        return ['全部', ...Array.from(categories)];
-      }, [products, activeTab]);
 
       const showToast = (msg) => {
         setToastMessage(msg);
@@ -340,7 +365,6 @@
           setCart([]);
           setShowCart(false);
 
-          // 核心判斷：是否在 LINE App 內開啟 LIFF
           if (isLiffReady && liff.isInClient()) {
             try {
               showToast("處理中，請稍候...");
@@ -350,14 +374,13 @@
               }]);
               showToast("✅ 訂單已自動傳送成功！");
               setTimeout(() => {
-                liff.closeWindow(); // 發送成功後自動關閉視窗
+                liff.closeWindow(); 
               }, 1500);
             } catch (liffError) {
               console.error("LIFF 傳送失敗:", liffError);
               showToast("訂單建立成功，但訊息發送失敗，請手動聯絡客服。");
             }
           } else {
-            // 如果不是用 LIFF 開啟，就退回使用備用跳轉方案
             showToast("⚠️ 未使用 LIFF 開啟，轉為手動發送...");
             setTimeout(() => {
               const encodedMessage = encodeURIComponent(lineMessageText);
@@ -449,7 +472,8 @@
                   className={`min-w-[100px] flex-1 shrink-0 py-3 px-2 text-center font-bold flex items-center justify-center gap-2 transition-colors whitespace-nowrap ${activeTab === tab ? 'bg-orange-100 text-orange-700 border-b-2 border-orange-500' : 'text-gray-500 hover:bg-gray-50'}`}
                   onClick={() => { setActiveTab(tab); setActiveCategory('全部'); }}
                 >
-                  {tab.includes('貓') ? <i className="fas fa-cat"></i> : (tab.includes('狗') ? <i className="fas fa-dog"></i> : <i className="fas fa-box-open"></i>)}
+                  {/* 【更新】為品牌區加上專屬的吊牌圖示 */}
+                  {tab === '品牌區' ? <i className="fas fa-tags"></i> : (tab.includes('貓') ? <i className="fas fa-cat"></i> : (tab.includes('狗') ? <i className="fas fa-dog"></i> : <i className="fas fa-box-open"></i>))}
                   {tab}
                 </button>
               ))}
@@ -464,7 +488,7 @@
                   onClick={() => setActiveCategory(cat)}
                   className={`whitespace-nowrap px-5 py-2 rounded-full text-sm font-medium transition-colors ${
                     activeCategory === cat 
-                      ? (activeTab === '貓貓' ? 'bg-orange-500 text-white shadow-md' : 'bg-blue-500 text-white shadow-md') 
+                      ? (activeTab === '品牌區' ? 'bg-purple-500 text-white shadow-md' : (activeTab === '貓貓' || activeTab === '貓咪' ? 'bg-orange-500 text-white shadow-md' : 'bg-blue-500 text-white shadow-md')) 
                       : 'bg-white text-gray-600 border border-gray-200 hover:bg-gray-50'
                   }`}
                 >
@@ -487,9 +511,8 @@
             )}
           </main>
 
-          {/* 狀態偵測指示燈 (放在頁面最底端) */}
           <div className="text-center text-[10px] text-gray-400 pb-2">
-            系統狀態: {liffStatus} | V1.4.2
+            系統狀態: {liffStatus} | V1.4.5
           </div>
 
           {cart.length > 0 && !showCart && (
@@ -500,12 +523,19 @@
                     <span className="text-sm text-gray-500">共 {cartTotalQuantity} 件</span>
                     <span className="text-2xl font-black text-orange-600">${cartTotal}</span>
                   </div>
+                  <div className="text-xs font-bold mt-1">
+                    {cartTotal >= FREE_SHIPPING_THRESHOLD ? (
+                      <span className="text-green-600 bg-green-50 px-2 py-0.5 rounded">🎉 已達免運門檻</span>
+                    ) : (
+                      <span className="text-red-500 bg-red-50 px-2 py-0.5 rounded">🚚 還差 ${FREE_SHIPPING_THRESHOLD - cartTotal} 免運</span>
+                    )}
+                  </div>
                 </div>
                 <div className="flex gap-2">
                   <button onClick={() => setShowCart(true)} className="bg-orange-50 hover:bg-orange-100 text-orange-600 px-4 py-3 rounded-xl font-bold border border-orange-200 transition-colors flex items-center justify-center gap-2">
                     <i className="fas fa-shopping-cart text-lg"></i><span className="hidden sm:inline">購物車</span>
                   </button>
-                  <button onClick={() => setShowCart(true)} className="bg-orange-500 hover:bg-orange-600 text-white px-6 py-3 rounded-xl font-bold shadow-md shadow-orange-200 transition-colors flex items-center justify-center whitespace-nowrap text-lg">去結帳</button>
+                  <button onClick={() => setShowCart(true)} className="bg-orange-500 hover:bg-orange-600 text-white px-6 py-3 rounded-xl font-bold shadow-md shadow-orange-200 transition-colors flex items-center justify-center whitespace-nowrap text-lg">傳送訂單</button>
                 </div>
               </div>
             </div>
@@ -578,7 +608,7 @@
                     </div>
                   </div>
                   {ENABLE_ORDER_SUBMIT ? (
-                    <button onClick={submitOrder} disabled={cart.length === 0} className={`w-full py-4 rounded-xl font-bold text-lg transition-colors flex justify-center items-center gap-2 ${cart.length === 0 ? 'bg-gray-200 text-gray-400 cursor-not-allowed' : 'bg-orange-500 hover:bg-orange-600 text-white shadow-lg shadow-orange-200'}`}>確認送出訂單</button>
+                    <button onClick={submitOrder} disabled={cart.length === 0} className={`w-full py-4 rounded-xl font-bold text-lg transition-colors flex justify-center items-center gap-2 ${cart.length === 0 ? 'bg-gray-200 text-gray-400 cursor-not-allowed' : 'bg-orange-500 hover:bg-orange-600 text-white shadow-lg shadow-orange-200'}`}>傳送訂單</button>
                   ) : (
                     <div className="w-full py-4 bg-gray-100 text-gray-500 rounded-xl text-center text-sm font-medium">目前為展示模式，暫未開放下單功能</div>
                   )}
@@ -602,12 +632,10 @@
                     <div className="space-y-4">
                       {orders.map(order => (
                         <div key={order.id} className="bg-white p-4 rounded-2xl shadow-sm border border-gray-100">
+                          {/* 移除原本的狀態標籤，只保留時間 */}
                           <div className="flex justify-between items-center mb-3 pb-2 border-b border-gray-50">
                             <span className="text-xs text-gray-400">
                               {order.createdAt?.toMillis ? new Date(order.createdAt.toMillis()).toLocaleString('zh-TW') : '剛剛'}
-                            </span>
-                            <span className={`text-xs px-2 py-1 rounded-md font-bold ${order.status === '處理中' ? 'bg-blue-50 text-blue-600' : 'bg-green-50 text-green-600'}`}>
-                              {order.status}
                             </span>
                           </div>
                           <div className="space-y-2 mb-3">
