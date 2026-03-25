@@ -59,7 +59,7 @@
     const LIFF_ID = '2009604254-bT0llaE8'; 
 
     // 原本的 LINE_OA_ID 保留作為外部瀏覽器開啟時的備用方案
-    const LINE_OA_ID = '@your_line_id'; 
+    const LINE_OA_ID = '@677uvbbh'; 
 
     // 2. 你的 Google Sheets CSV 網址
     const GOOGLE_SHEETS_CSV_URL = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vT3tuEXDRx7MqpS-7LPlZ1PC0BuxjPOOg28bR-bHIV3sXYNEKhjroZG6IaYoonoWQ0eB-qamSXcP3dD/pub?output=csv';
@@ -368,7 +368,7 @@
               // 傳送成功後，延遲 1.5 秒自動關閉 LIFF 視窗
               setTimeout(() => {
                 liff.closeWindow();
-              }, 1500);
+              }, 500);
 
             } catch (liffError) {
               console.error("LIFF 傳送失敗:", liffError);
@@ -376,7 +376,7 @@
             }
           } else {
             // 備用方案：如果客人是用電腦或外部瀏覽器打開，就用原本的跳轉方式
-            showToast("訂單已產生！正在為您跳轉至 LINE...");
+            showToast("訂單準備傳送！正在為您跳轉至 LINE...");
             setTimeout(() => {
               const encodedMessage = encodeURIComponent(lineMessageText);
               window.location.href = `https://line.me/R/oaMessage/${LINE_OA_ID}/?${encodedMessage}`;
@@ -543,7 +543,7 @@
                     onClick={() => setShowCart(true)}
                     className="bg-orange-500 hover:bg-orange-600 text-white px-6 py-3 rounded-xl font-bold shadow-md shadow-orange-200 transition-colors flex items-center justify-center whitespace-nowrap text-lg"
                   >
-                    送出訂單
+                    送出訂單2
                   </button>
                 </div>
               </div>
