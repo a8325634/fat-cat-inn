@@ -6,20 +6,15 @@
   <title>肥貓客棧 - 數位目錄</title>
   
   <script src="https://cdn.tailwindcss.com"></script>
-  
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-  
   <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-
   <script charset="utf-8" src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
 
   <style>
-    /* 隱藏滾動條但保留滾動功能 */
     .hide-scrollbar::-webkit-scrollbar { display: none; }
     .hide-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
-    /* 進場動畫 */
     @keyframes slide-up { from { transform: translateY(100%); } to { transform: translateY(0); } }
     .animate-slide-up { animation: slide-up 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
     @keyframes scale-in { from { transform: scale(0.95); opacity: 0; } to { transform: scale(1); opacity: 1; } }
@@ -47,34 +42,30 @@
      * 2. 結帳功能改用 liff.sendMessages()，可直接代替使用者在官方帳號對話框中發送訂單資訊。
      * 3. 訂單發送成功後，自動關閉 LIFF 視窗 (liff.closeWindow())，提升操作流暢度。
      * ============================================================================== */
-
+    /* ==============================================================================
+     * 【版本公告】V1.4.2 (加入 LIFF 狀態偵測燈與終極 CSV 雙引號修復)
+     * ============================================================================== */
     const { useState, useEffect, useMemo } = React;
 
     // ============================================================================
-    // 【全域設定區】(上線前請修改這裡的設定)
+    // ⚠️ 【請在此處填寫你的專屬資料】 ⚠️
     // ============================================================================
     
-    // 1. 【超重要】你的 LINE LIFF ID 
-    // 請在 LINE Developers 後台建立 LIFF APP 後取得，並貼在下方單引號內
+    // 1. 【填入你的 LIFF ID】(從 LINE Developers 取得)
     const LIFF_ID = '2009604254-bT0llaE8'; 
 
-    // 原本的 LINE_OA_ID 保留作為外部瀏覽器開啟時的備用方案
+    // 2. 【填入你的官方帳號 ID】(包含 @)
     const LINE_OA_ID = '@677uvbbh'; 
 
-    // 2. 你的 Google Sheets CSV 網址
+    // 3. 你的 Google Sheets CSV 網址
     const GOOGLE_SHEETS_CSV_URL = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vT3tuEXDRx7MqpS-7LPlZ1PC0BuxjPOOg28bR-bHIV3sXYNEKhjroZG6IaYoonoWQ0eB-qamSXcP3dD/pub?output=csv';
     
-    // 3. 系統開關與門檻
     const ENABLE_ORDER_SUBMIT = true; 
     const FREE_SHIPPING_THRESHOLD = 1500;
 
-    const MOCK_CSV_DATA = `動物分類,商品分類,商品名稱,圖片網址,商品描述,規格與價格與條碼\n貓貓,飼料/泌尿道保健,皇家 貓用泌尿道處方飼料,https://placehold.co/800x800/ffedd5/f97316?text=Cat+Food,專為貓咪泌尿道健康設計,1.5kg,850,BARCODE-CAT-001|3kg,1550,BARCODE-CAT-002`;
-
     // ============================================================================
-    // 【Firebase 初始化設定】
+    // ⚠️ 【請在此處填寫你的 Firebase 金鑰】 ⚠️
     // ============================================================================
-    // Your web app's Firebase configuration
-// For Firebase JS SDK v7.20.0 and later, measurementId is optional
     const firebaseConfig = {
       apiKey: "AIzaSyCL9iKMiSGNwvnWYL7svKygjQ4x-iQa1rw",
       authDomain: "fatcat-line.firebaseapp.com",
@@ -84,6 +75,7 @@
       appId: "1:853444053785:web:5a03cc579283a4b5501388",
       measurementId: "G-CBRYQ55DYC"
     };
+    
     const app = Object.keys(firebaseConfig).length > 0 ? initializeApp(firebaseConfig) : null;
     const auth = app ? getAuth(app) : null;
     const db = app ? getFirestore(app) : null;
@@ -103,7 +95,8 @@
       const [user, setUser] = useState(null); 
       const [userProfile, setUserProfile] = useState({ name: '', phone: '', address: '' });
       const [orders, setOrders] = useState([]);
-      const [isLiffReady, setIsLiffReady] = useState(false); // 記錄 LIFF 是否初始化成功
+      const [isLiffReady, setIsLiffReady] = useState(false);
+      const [liffStatus, setLiffStatus] = useState('初始化中...');
       
       const [products, setProducts] = useState([]);
       const [activeTab, setActiveTab] = useState('');
@@ -115,41 +108,42 @@
       const [showHistory, setShowHistory] = useState(false);
       const [toastMessage, setToastMessage] = useState('');
 
-      // ============================================================================
-      // 【初始化 LIFF SDK】
-      // ============================================================================
+      // 初始化 LIFF
       useEffect(() => {
         const initLiff = async () => {
           try {
-            if (LIFF_ID === '2009604254-bT0llaE8') {
-              console.warn('⚠️ 尚未設定 LIFF ID，將使用一般網頁模式運行。');
+            if (LIFF_ID === '請在此填入你的_LIFF_ID') {
+              setLiffStatus('🔴 未設定 LIFF ID');
               return;
             }
             await liff.init({ liffId: LIFF_ID });
             setIsLiffReady(true);
-            console.log('LIFF 初始化成功！');
+            
+            if (liff.isInClient()) {
+              setLiffStatus('🟢 已連線 (LINE APP 內)');
+            } else {
+              setLiffStatus('🟡 網頁模式 (需使用 liff.line.me 網址)');
+            }
           } catch (err) {
             console.error('LIFF 初始化失敗:', err);
+            setLiffStatus('🔴 LIFF 載入失敗');
           }
         };
         initLiff();
       }, []);
 
+      // 初始化 Firebase Auth
       useEffect(() => {
         if (!auth) return;
         const initAuth = async () => {
           try {
             if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
               try {
-                // 嘗試使用環境提供的 token 登入 (預覽環境用)
                 await signInWithCustomToken(auth, __initial_auth_token);
               } catch (tokenError) {
-                // 如果 token 不匹配 (因為換成了你自己的 Firebase 金鑰)，則自動改用匿名登入
-                console.warn("Token 不匹配，切換至匿名登入模式...", tokenError);
                 await signInAnonymously(auth);
               }
             } else {
-              // 正式上線到 GitHub 後，沒有初始 token，會直接走這裡匿名登入
               await signInAnonymously(auth);
             }
           } catch (error) {
@@ -161,22 +155,20 @@
         return () => unsubscribe();
       }, []);
 
+      // 載入 Google Sheets
       useEffect(() => {
         const loadData = async () => {
           try {
-            let csvText = '';
-            if (GOOGLE_SHEETS_CSV_URL) {
-              const response = await fetch(GOOGLE_SHEETS_CSV_URL);
-              csvText = await response.text();
-            } else {
-              csvText = MOCK_CSV_DATA;
-            }
-
+            if (!GOOGLE_SHEETS_CSV_URL) return;
+            const response = await fetch(GOOGLE_SHEETS_CSV_URL);
+            const csvText = await response.text();
+            
             const lines = csvText.split('\n').filter(line => line.trim() !== '');
             if (lines.length <= 1) return;
 
             const parseCSVLine = (text) => {
-              return text.split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/).map(col => col.replace(/^"|"$/g, '').replace(/""/g, '"').trim());
+              // 強力去除所有多餘的雙引號與空白
+              return text.split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/).map(col => col.replace(/(^"|"$)/g, '').replace(/""/g, '"').replace(/"$/, '').trim());
             };
 
             const parsedProducts = lines.slice(1).map((line, index) => {
@@ -186,9 +178,9 @@
               const variants = variantsRaw.split('|').map(v => {
                 const [vName, vPrice, vBarcode] = v.split(',');
                 return {
-                  name: vName ? vName.trim() : '預設規格',
+                  name: vName ? vName.replace(/"/g, '').trim() : '預設規格',
                   price: parseInt(vPrice) || 0,
-                  barcode: vBarcode ? vBarcode.trim() : '' 
+                  barcode: vBarcode ? vBarcode.replace(/"/g, '').trim() : '' 
                 };
               });
 
@@ -205,12 +197,12 @@
             setProducts(parsedProducts);
           } catch (error) {
             console.error("載入商品資料失敗:", error);
-            showToast("商品資料載入失敗，請檢查網址。");
           }
         };
         loadData();
       }, []);
 
+      // 載入 Firebase 資料
       useEffect(() => {
         if (!user || !db) return;
 
@@ -221,9 +213,7 @@
             if (docSnap.exists()) {
               setUserProfile(docSnap.data());
             }
-          } catch (error) {
-            console.error("讀取個人資料失敗:", error);
-          }
+          } catch (error) {}
         };
         fetchProfile();
 
@@ -239,9 +229,7 @@
             return timeB - timeA;
           });
           setOrders(fetchedOrders);
-        }, (error) => {
-          console.error("讀取訂單失敗:", error);
-        });
+        }, (error) => {});
 
         return () => unsubscribeOrders();
       }, [user]);
@@ -312,32 +300,29 @@
       const cartTotal = cart.reduce((sum, item) => sum + (item.variant.price * item.quantity), 0);
       const cartTotalQuantity = cart.reduce((sum, item) => sum + item.quantity, 0);
 
-      // 【更新】使用 LIFF 傳送訂單
       const submitOrder = async () => {
-        if (!user || !db) {
-          showToast("系統連線中，請稍候...");
-          return;
-        }
+        if (cart.length === 0) return;
         if (!userProfile.name || !userProfile.phone || !userProfile.address) {
           showToast("請填寫完整的收件資訊！");
           return;
         }
 
         try {
-          const profileRef = doc(db, 'artifacts', appId, 'users', user.uid, 'profiles', 'default');
-          await setDoc(profileRef, userProfile);
+          if (user && db) {
+            const profileRef = doc(db, 'artifacts', appId, 'users', user.uid, 'profiles', 'default');
+            await setDoc(profileRef, userProfile);
 
-          const newOrder = {
-            items: cart,
-            totalAmount: cartTotal,
-            recipient: userProfile,
-            status: '處理中',
-            trackingNumber: '',
-            createdAt: serverTimestamp()
-          };
-          
-          const ordersRef = collection(db, 'artifacts', appId, 'users', user.uid, 'orders');
-          await addDoc(ordersRef, newOrder);
+            const newOrder = {
+              items: cart,
+              totalAmount: cartTotal,
+              recipient: userProfile,
+              status: '處理中',
+              trackingNumber: '',
+              createdAt: serverTimestamp()
+            };
+            const ordersRef = collection(db, 'artifacts', appId, 'users', user.uid, 'orders');
+            await addDoc(ordersRef, newOrder);
+          }
 
           let lineMessageText = `【肥貓客棧 - 新訂單】\n`;
           lineMessageText += `訂購人：${userProfile.name}\n`;
@@ -355,37 +340,33 @@
           setCart([]);
           setShowCart(false);
 
-          // 判斷是否在 LINE APP 裡面開啟 (LIFF 模式)
+          // 核心判斷：是否在 LINE App 內開啟 LIFF
           if (isLiffReady && liff.isInClient()) {
             try {
-              // 透過 LIFF 代替使用者發送訊息到聊天室
+              showToast("處理中，請稍候...");
               await liff.sendMessages([{
                 type: 'text',
                 text: lineMessageText
               }]);
-              showToast("訂單已成功送出！");
-              
-              // 傳送成功後，延遲 1.5 秒自動關閉 LIFF 視窗
+              showToast("✅ 訂單已自動傳送成功！");
               setTimeout(() => {
-                liff.closeWindow();
-              }, 500);
-
+                liff.closeWindow(); // 發送成功後自動關閉視窗
+              }, 1500);
             } catch (liffError) {
               console.error("LIFF 傳送失敗:", liffError);
-              showToast("訂單已建立，但自動傳送訊息失敗。");
+              showToast("訂單建立成功，但訊息發送失敗，請手動聯絡客服。");
             }
           } else {
-            // 備用方案：如果客人是用電腦或外部瀏覽器打開，就用原本的跳轉方式
-            showToast("訂單準備傳送！正在為您跳轉至 LINE...");
+            // 如果不是用 LIFF 開啟，就退回使用備用跳轉方案
+            showToast("⚠️ 未使用 LIFF 開啟，轉為手動發送...");
             setTimeout(() => {
               const encodedMessage = encodeURIComponent(lineMessageText);
               window.location.href = `https://line.me/R/oaMessage/${LINE_OA_ID}/?${encodedMessage}`;
             }, 1500);
           }
-
         } catch (error) {
           console.error("送出訂單發生錯誤:", error);
-          showToast("送出失敗，請稍後再試。");
+          showToast("送出失敗，請檢查網路連線。");
         }
       };
 
@@ -436,7 +417,7 @@
       };
 
       return (
-        <div className={`min-h-screen bg-amber-50 font-sans text-gray-800 ${cart.length > 0 ? 'pb-28' : 'pb-6'} md:pb-0`}>
+        <div className={`min-h-screen bg-amber-50 font-sans text-gray-800 ${cart.length > 0 ? 'pb-28' : 'pb-16'} md:pb-6`}>
           <Toast message={toastMessage} onClose={() => setToastMessage('')} />
 
           <header className="bg-white shadow-sm sticky top-0 z-30">
@@ -447,7 +428,6 @@
                 </div>
                 <h1 className="text-xl font-black tracking-wider text-gray-800">肥貓客棧</h1>
               </div>
-              
               <div className="flex gap-3">
                 <button onClick={() => setShowHistory(true)} className="p-2 text-gray-500 hover:bg-orange-50 rounded-full transition-colors relative w-10 h-10 flex items-center justify-center">
                   <i className="fas fa-clock-rotate-left text-lg"></i>
@@ -458,13 +438,7 @@
             <div className="max-w-4xl mx-auto px-4 pb-3">
               <div className="relative">
                 <i className="fas fa-search absolute left-4 top-1/2 transform -translate-y-1/2 text-gray-400"></i>
-                <input 
-                  type="text" 
-                  placeholder="搜尋商品關鍵字..." 
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  className="w-full bg-gray-100 border-transparent focus:bg-white focus:border-orange-300 focus:ring-2 focus:ring-orange-200 rounded-xl py-2 pl-10 pr-4 outline-none transition-all"
-                />
+                <input type="text" placeholder="搜尋商品關鍵字..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} className="w-full bg-gray-100 border-transparent focus:bg-white focus:border-orange-300 focus:ring-2 focus:ring-orange-200 rounded-xl py-2 pl-10 pr-4 outline-none transition-all" />
               </div>
             </div>
 
@@ -513,6 +487,11 @@
             )}
           </main>
 
+          {/* 狀態偵測指示燈 (放在頁面最底端) */}
+          <div className="text-center text-[10px] text-gray-400 pb-2">
+            系統狀態: {liffStatus} | V1.4.2
+          </div>
+
           {cart.length > 0 && !showCart && (
             <div className="fixed bottom-0 left-0 w-full bg-white border-t border-orange-200 shadow-[0_-10px_20px_rgba(0,0,0,0.05)] z-30 px-4 py-3 animate-slide-up">
               <div className="max-w-4xl mx-auto flex items-center justify-between">
@@ -521,30 +500,12 @@
                     <span className="text-sm text-gray-500">共 {cartTotalQuantity} 件</span>
                     <span className="text-2xl font-black text-orange-600">${cartTotal}</span>
                   </div>
-                  <div className="text-xs font-bold mt-1">
-                    {cartTotal >= FREE_SHIPPING_THRESHOLD ? (
-                      <span className="text-green-600 bg-green-50 px-2 py-0.5 rounded">🎉 已達免運門檻</span>
-                    ) : (
-                      <span className="text-red-500 bg-red-50 px-2 py-0.5 rounded">🚚 還差 ${FREE_SHIPPING_THRESHOLD - cartTotal} 免運</span>
-                    )}
-                  </div>
                 </div>
-                
                 <div className="flex gap-2">
-                  <button
-                    onClick={() => setShowCart(true)}
-                    className="bg-orange-50 hover:bg-orange-100 text-orange-600 px-4 py-3 rounded-xl font-bold border border-orange-200 transition-colors flex items-center justify-center gap-2"
-                    title="查看或修改購物車"
-                  >
-                    <i className="fas fa-shopping-cart text-lg"></i>
-                    <span className="hidden sm:inline">購物車</span>
+                  <button onClick={() => setShowCart(true)} className="bg-orange-50 hover:bg-orange-100 text-orange-600 px-4 py-3 rounded-xl font-bold border border-orange-200 transition-colors flex items-center justify-center gap-2">
+                    <i className="fas fa-shopping-cart text-lg"></i><span className="hidden sm:inline">購物車</span>
                   </button>
-                  <button
-                    onClick={() => setShowCart(true)}
-                    className="bg-orange-500 hover:bg-orange-600 text-white px-6 py-3 rounded-xl font-bold shadow-md shadow-orange-200 transition-colors flex items-center justify-center whitespace-nowrap text-lg"
-                  >
-                    送出訂單2
-                  </button>
+                  <button onClick={() => setShowCart(true)} className="bg-orange-500 hover:bg-orange-600 text-white px-6 py-3 rounded-xl font-bold shadow-md shadow-orange-200 transition-colors flex items-center justify-center whitespace-nowrap text-lg">去結帳</button>
                 </div>
               </div>
             </div>
@@ -617,17 +578,9 @@
                     </div>
                   </div>
                   {ENABLE_ORDER_SUBMIT ? (
-                    <button 
-                      onClick={submitOrder}
-                      disabled={cart.length === 0}
-                      className={`w-full py-4 rounded-xl font-bold text-lg transition-colors flex justify-center items-center gap-2 ${cart.length === 0 ? 'bg-gray-200 text-gray-400 cursor-not-allowed' : 'bg-orange-500 hover:bg-orange-600 text-white shadow-lg shadow-orange-200'}`}
-                    >
-                      確認送出訂單
-                    </button>
+                    <button onClick={submitOrder} disabled={cart.length === 0} className={`w-full py-4 rounded-xl font-bold text-lg transition-colors flex justify-center items-center gap-2 ${cart.length === 0 ? 'bg-gray-200 text-gray-400 cursor-not-allowed' : 'bg-orange-500 hover:bg-orange-600 text-white shadow-lg shadow-orange-200'}`}>確認送出訂單</button>
                   ) : (
-                    <div className="w-full py-4 bg-gray-100 text-gray-500 rounded-xl text-center text-sm font-medium">
-                      目前為展示模式，暫未開放下單功能
-                    </div>
+                    <div className="w-full py-4 bg-gray-100 text-gray-500 rounded-xl text-center text-sm font-medium">目前為展示模式，暫未開放下單功能</div>
                   )}
                 </div>
               </div>
@@ -657,7 +610,6 @@
                               {order.status}
                             </span>
                           </div>
-                          
                           <div className="space-y-2 mb-3">
                             {order.items.map((item, idx) => (
                               <div key={idx} className="flex justify-between text-sm">
@@ -666,19 +618,10 @@
                               </div>
                             ))}
                           </div>
-
                           <div className="flex justify-between items-center pt-3 border-t border-gray-50 font-bold">
                             <span className="text-sm text-gray-600">總計</span>
                             <span className="text-orange-600">${order.totalAmount}</span>
                           </div>
-
-                          {order.trackingNumber && (
-                            <div className="mt-3 bg-gray-50 p-2 rounded-lg text-sm border border-gray-200 flex items-center gap-2">
-                              <i className="fas fa-box-open text-gray-500"></i>
-                              <span className="text-gray-600">貨運編號：</span>
-                              <span className="font-bold tracking-wider text-gray-800">{order.trackingNumber}</span>
-                            </div>
-                          )}
                         </div>
                       ))}
                     </div>
