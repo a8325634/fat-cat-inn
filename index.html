@@ -5,16 +5,15 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <title>肥貓客棧 - 數位目錄</title>
   
-  <!-- 載入 Tailwind CSS (排版與樣式) -->
   <script src="https://cdn.tailwindcss.com"></script>
   
-  <!-- 載入 FontAwesome 圖示庫 -->
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
   
-  <!-- 載入 React 核心 (透過 CDN 直接在 HTML 執行) -->
   <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+  <script charset="utf-8" src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
 
   <style>
     /* 隱藏滾動條但保留滾動功能 */
@@ -30,7 +29,6 @@
 <body class="bg-amber-50">
   <div id="root"></div>
 
-  <!-- 主要應用程式程式碼 (加上 data-type="module" 以支援 Firebase 模組載入) -->
   <script type="text/babel" data-type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
     import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
@@ -39,23 +37,15 @@
     /* ==============================================================================
      * 【版本公告與更新日誌】
      * ==============================================================================
-     * 版本: V1.3.0 (Firebase 雲端資料庫版)
+     * 版本: V1.4.0 (LIFF 專業版)
      * 日期: 2026-03-25
-     * * 【V1.0.0 基礎建設】
-     * 1. 建立基礎數位目錄架構。
-     * 2. 實作響應式設計自動適應各種手機螢幕大小。
-     * 3. 內建快速搜尋與貨運編號查詢介面。
-     * * 【V1.1.0 更新內容】
-     * 1. 支援「多重分類」：商品分類可用斜線(/)隔開。
-     * 2. 動態生成主分類與次分類：完全依賴 Google Sheets 資料自動產生標籤。
-     * 3. 購物車優化：新增滿額免運提示。
-     * * 【V1.2.0 & V1.2.1 更新內容】
-     * 1. 轉為單一 HTML 檔案，直接放上 GitHub 即可運行。
-     * 2. 購物車按鈕拆分為「查看購物車」與「去結帳」。
-     * 3. 修正 Google Sheets 雙引號解析問題，確保價格正確。
-     * 4. 加入 LINE 官方帳號自動跳轉功能：送出訂單後，自動開啟 LINE APP。
-     * * 【V1.3.0 更新內容 (本次更新)】
-     * 1. 重新整合 Firebase 雲端資料庫，確保所有顧客收件資訊與訂單皆安全儲存於雲端。
+     * * 【歷史更新簡要】
+     * - V1.0-V1.2: 基礎建設、多重分類、純 HTML 單檔化、修正 CSV 雙引號。
+     * - V1.3: 重新整合 Firebase 雲端資料庫。
+     * * 【V1.4.0 更新內容 (本次更新)】
+     * 1. 導入 LINE LIFF SDK，實現在 LINE APP 內無縫開啟與操作。
+     * 2. 結帳功能改用 liff.sendMessages()，可直接代替使用者在官方帳號對話框中發送訂單資訊。
+     * 3. 訂單發送成功後，自動關閉 LIFF 視窗 (liff.closeWindow())，提升操作流暢度。
      * ============================================================================== */
 
     const { useState, useEffect, useMemo } = React;
@@ -64,8 +54,12 @@
     // 【全域設定區】(上線前請修改這裡的設定)
     // ============================================================================
     
-    // 1. 【超重要】你的 LINE 官方帳號 ID (記得包含 @)
-    const LINE_OA_ID = '@your_line_id'; // <--- 請改成你的 LINE ID，例如 '@fatcat123'
+    // 1. 【超重要】你的 LINE LIFF ID 
+    // 請在 LINE Developers 後台建立 LIFF APP 後取得，並貼在下方單引號內
+    const LIFF_ID = '請在此填入你的_LIFF_ID'; 
+
+    // 原本的 LINE_OA_ID 保留作為外部瀏覽器開啟時的備用方案
+    const LINE_OA_ID = '@your_line_id'; 
 
     // 2. 你的 Google Sheets CSV 網址
     const GOOGLE_SHEETS_CSV_URL = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vT3tuEXDRx7MqpS-7LPlZ1PC0BuxjPOOg28bR-bHIV3sXYNEKhjroZG6IaYoonoWQ0eB-qamSXcP3dD/pub?output=csv';
@@ -74,7 +68,6 @@
     const ENABLE_ORDER_SUBMIT = true; 
     const FREE_SHIPPING_THRESHOLD = 1500;
 
-    // 預設測試資料 (當 Google Sheet 失效或未填寫時顯示)
     const MOCK_CSV_DATA = `動物分類,商品分類,商品名稱,圖片網址,商品描述,規格與價格與條碼\n貓貓,飼料/泌尿道保健,皇家 貓用泌尿道處方飼料,https://placehold.co/800x800/ffedd5/f97316?text=Cat+Food,專為貓咪泌尿道健康設計,1.5kg,850,BARCODE-CAT-001|3kg,1550,BARCODE-CAT-002`;
 
     // ============================================================================
@@ -86,7 +79,6 @@
     const db = app ? getFirestore(app) : null;
     const appId = typeof __app_id !== 'undefined' ? __app_id : 'fat-cat-inn-default';
 
-    // 彈窗組件
     const Toast = ({ message, onClose }) => {
       if (!message) return null;
       return (
@@ -98,10 +90,10 @@
     };
 
     function App() {
-      // 狀態管理
       const [user, setUser] = useState(null); 
       const [userProfile, setUserProfile] = useState({ name: '', phone: '', address: '' });
       const [orders, setOrders] = useState([]);
+      const [isLiffReady, setIsLiffReady] = useState(false); // 記錄 LIFF 是否初始化成功
       
       const [products, setProducts] = useState([]);
       const [activeTab, setActiveTab] = useState('');
@@ -114,10 +106,25 @@
       const [toastMessage, setToastMessage] = useState('');
 
       // ============================================================================
-      // 【初始化與資料載入】
+      // 【初始化 LIFF SDK】
       // ============================================================================
+      useEffect(() => {
+        const initLiff = async () => {
+          try {
+            if (LIFF_ID === '請在此填入你的_LIFF_ID') {
+              console.warn('⚠️ 尚未設定 LIFF ID，將使用一般網頁模式運行。');
+              return;
+            }
+            await liff.init({ liffId: LIFF_ID });
+            setIsLiffReady(true);
+            console.log('LIFF 初始化成功！');
+          } catch (err) {
+            console.error('LIFF 初始化失敗:', err);
+          }
+        };
+        initLiff();
+      }, []);
 
-      // 1. Firebase 登入與監聽
       useEffect(() => {
         if (!auth) return;
         const initAuth = async () => {
@@ -128,7 +135,7 @@
               await signInAnonymously(auth);
             }
           } catch (error) {
-            console.error("登入失敗:", error);
+            console.error("Firebase 登入失敗:", error);
           }
         };
         initAuth();
@@ -136,7 +143,6 @@
         return () => unsubscribe();
       }, []);
 
-      // 2. 載入 Google Sheets 資料
       useEffect(() => {
         const loadData = async () => {
           try {
@@ -151,7 +157,6 @@
             const lines = csvText.split('\n').filter(line => line.trim() !== '');
             if (lines.length <= 1) return;
 
-            // 處理雙引號包夾的逗號問題
             const parseCSVLine = (text) => {
               return text.split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/).map(col => col.replace(/^"|"$/g, '').replace(/""/g, '"').trim());
             };
@@ -188,7 +193,6 @@
         loadData();
       }, []);
 
-      // 3. 從 Firebase 載入客人的資料與歷史訂單
       useEffect(() => {
         if (!user || !db) return;
 
@@ -224,9 +228,6 @@
         return () => unsubscribeOrders();
       }, [user]);
 
-      // ============================================================================
-      // 【資料過濾邏輯】
-      // ============================================================================
       const availableMainTabs = useMemo(() => {
         return [...new Set(products.map(p => p.animal))];
       }, [products]);
@@ -251,9 +252,6 @@
         return ['全部', ...Array.from(categories)];
       }, [products, activeTab]);
 
-      // ============================================================================
-      // 【操作功能函數】
-      // ============================================================================
       const showToast = (msg) => {
         setToastMessage(msg);
         setTimeout(() => setToastMessage(''), 3000);
@@ -296,7 +294,7 @@
       const cartTotal = cart.reduce((sum, item) => sum + (item.variant.price * item.quantity), 0);
       const cartTotalQuantity = cart.reduce((sum, item) => sum + item.quantity, 0);
 
-      // 儲存訂單到 Firebase 並傳送 LINE 訊息
+      // 【更新】使用 LIFF 傳送訂單
       const submitOrder = async () => {
         if (!user || !db) {
           showToast("系統連線中，請稍候...");
@@ -308,11 +306,9 @@
         }
 
         try {
-          // 儲存收件資料到 Firestore
           const profileRef = doc(db, 'artifacts', appId, 'users', user.uid, 'profiles', 'default');
           await setDoc(profileRef, userProfile);
 
-          // 產生新訂單紀錄儲存到 Firestore
           const newOrder = {
             items: cart,
             totalAmount: cartTotal,
@@ -325,7 +321,6 @@
           const ordersRef = collection(db, 'artifacts', appId, 'users', user.uid, 'orders');
           await addDoc(ordersRef, newOrder);
 
-          // 產生要傳給 LINE OA 的純文字訊息
           let lineMessageText = `【肥貓客棧 - 新訂單】\n`;
           lineMessageText += `訂購人：${userProfile.name}\n`;
           lineMessageText += `電話：${userProfile.phone}\n`;
@@ -339,16 +334,36 @@
           lineMessageText += `------------------\n`;
           lineMessageText += `總計金額：$${cartTotal}`;
 
-          // 清空購物車與視窗
           setCart([]);
           setShowCart(false);
 
-          // 自動跳轉至 LINE 官方帳號並貼上訊息
-          showToast("訂單已產生！正在為您跳轉至 LINE...");
-          setTimeout(() => {
-            const encodedMessage = encodeURIComponent(lineMessageText);
-            window.location.href = `https://line.me/R/oaMessage/${LINE_OA_ID}/?${encodedMessage}`;
-          }, 1500);
+          // 判斷是否在 LINE APP 裡面開啟 (LIFF 模式)
+          if (isLiffReady && liff.isInClient()) {
+            try {
+              // 透過 LIFF 代替使用者發送訊息到聊天室
+              await liff.sendMessages([{
+                type: 'text',
+                text: lineMessageText
+              }]);
+              showToast("訂單已成功送出！");
+              
+              // 傳送成功後，延遲 1.5 秒自動關閉 LIFF 視窗
+              setTimeout(() => {
+                liff.closeWindow();
+              }, 1500);
+
+            } catch (liffError) {
+              console.error("LIFF 傳送失敗:", liffError);
+              showToast("訂單已建立，但自動傳送訊息失敗。");
+            }
+          } else {
+            // 備用方案：如果客人是用電腦或外部瀏覽器打開，就用原本的跳轉方式
+            showToast("訂單已產生！正在為您跳轉至 LINE...");
+            setTimeout(() => {
+              const encodedMessage = encodeURIComponent(lineMessageText);
+              window.location.href = `https://line.me/R/oaMessage/${LINE_OA_ID}/?${encodedMessage}`;
+            }, 1500);
+          }
 
         } catch (error) {
           console.error("送出訂單發生錯誤:", error);
