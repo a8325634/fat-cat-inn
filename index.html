@@ -32,38 +32,44 @@
     /* ==============================================================================
      * 【版本公告與更新日誌】
      * ==============================================================================
-     * 版本: V1.4.5 (獨立品牌專區)
+     * 版本: V1.7.0 (莫筆克系統訂單欄位整合)
      * 日期: 2026-03-26
      * * 【歷史更新簡要】
-     * - V1.0-V1.3: 基礎建設、多重分類、純 HTML 單檔化、Firebase 雲端資料庫。
-     * - V1.4.0-V1.4.3: 導入 LINE LIFF SDK 與狀態燈、UI優化。
-     * - V1.4.4: 升級「大分類(A欄)」支援多重標籤。
-     * * 【V1.4.5 更新內容 (本次更新)】
-     * 1. 獨立出真正的「品牌區」功能！只需在 Google Sheets 新增 G 欄 (第7欄) 填入「商品品牌」，系統就會自動彙整所有品牌，並產生專屬的品牌大分類與過濾標籤。
+     * - V1.0-V1.4: 基礎建設、Firebase 資料庫、LIFF SDK 導入、品牌專區。
+     * 【歷史更新簡要】
+     * - V1.0-V1.4: 基礎建設、Firebase 資料庫、LIFF SDK 導入、品牌專區。
+     * - V1.5.0: 新增「商品活動標籤」與介面優化。
+     * - V1.6.0: 智慧活動算術系統 (大括號指令，自動扣抵與加贈品)。
+     * - V1.7.0: 莫筆克系統訂單欄位整合。
+     * - V1.8.0: 優化結帳流程 (拆分購物車與收件資訊)。
+     * * 【V1.9.0 更新內容 (本次更新)】
+     * 1. 運費系統整合：未達免運門檻自動加計 $150 運費，並於介面與歷史訂單清楚標示。
+     * 2. 莫筆克 CSV 匯入支援：於訂單送出後，LINE 訊息最下方會自動產生「莫筆克專用 CSV 格式單行資料」，方便店家直接複製並貼上至 Google Sheets。
      * ============================================================================== */
     const { useState, useEffect, useMemo } = React;
 
     // ============================================================================
-    // ⚠️ 【請在此處填寫你的專屬資料】 ⚠️
+    // ⚠️ 【專屬資料設定區】 ⚠️
     // ============================================================================
     
-    // 1. 【填入你的 LIFF ID】(從 LINE Developers 取得)
+    // 1. LIFF ID
     const LIFF_ID = '2009604254-bT0llaE8'; 
 
-    // 2. 【填入你的官方帳號 ID】(包含 @)
+    // 2. 官方帳號 ID (備用跳轉使用)
     const LINE_OA_ID = '@677uvbbh'; 
 
-    // 3. 你的 Google Sheets CSV 網址
+    // 3. Google Sheets CSV 網址
     const GOOGLE_SHEETS_CSV_URL = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vT3tuEXDRx7MqpS-7LPlZ1PC0BuxjPOOg28bR-bHIV3sXYNEKhjroZG6IaYoonoWQ0eB-qamSXcP3dD/pub?output=csv';
     
     const ENABLE_ORDER_SUBMIT = true; 
     const FREE_SHIPPING_THRESHOLD = 1500;
+    const SHIPPING_FEE = 150; // 【新增】未達免運門檻之運費
 
-    // 為了預覽時不報錯，加入第 7 欄的示範資料
-    const MOCK_CSV_DATA = `動物分類,商品分類,商品名稱,圖片網址,商品描述,規格與價格與條碼,商品品牌\n貓貓,飼料/泌尿道保健,皇家 貓用泌尿道處方飼料,https://placehold.co/800x800/ffedd5/f97316?text=Cat+Food,專為貓咪泌尿道健康設計,1.5kg,850,BARCODE-CAT-001|3kg,1550,BARCODE-CAT-002,法國皇家`;
+    // 加入第 7 欄與第 8 欄(含智慧指令)的示範資料
+    const MOCK_CSV_DATA = `動物分類,商品分類,商品名稱,圖片網址,商品描述,規格與價格與條碼,商品品牌,商品活動\n貓貓,飼料/泌尿道保健,皇家 貓用泌尿道處方飼料,https://placehold.co/800x800/ffedd5/f97316?text=Cat+Food,專為貓咪泌尿道健康設計,1.5kg,850,BARCODE-CAT-001|3kg,1550,BARCODE-CAT-002,法國皇家,買大送小滿額贈 {-50} {贈:試吃包}`;
 
     // ============================================================================
-    // ⚠️ 【請在此處填寫你的 Firebase 金鑰】 ⚠️
+    // ⚠️ 【Firebase 金鑰區】 ⚠️
     // ============================================================================
     const firebaseConfig = {
       apiKey: "AIzaSyCL9iKMiSGNwvnWYL7svKygjQ4x-iQa1rw",
@@ -92,7 +98,12 @@
 
     function App() {
       const [user, setUser] = useState(null); 
-      const [userProfile, setUserProfile] = useState({ name: '', phone: '', address: '' });
+      // 【修改】加入串接系統需要的額外欄位，並設定預設值
+      const [userProfile, setUserProfile] = useState({ 
+        name: '', phone: '', address: '', 
+        paymentMethod: '貨到付款', buyerNote: '', 
+        invoiceType: '', taxId: '', cloudInvoiceType: '', mobileBarcode: '' 
+      });
       const [orders, setOrders] = useState([]);
       const [isLiffReady, setIsLiffReady] = useState(false);
       const [liffStatus, setLiffStatus] = useState('初始化中...');
@@ -104,6 +115,7 @@
       const [cart, setCart] = useState([]);
       
       const [showCart, setShowCart] = useState(false);
+      const [checkoutStep, setCheckoutStep] = useState(false); // 【新增】結帳步驟狀態
       const [showHistory, setShowHistory] = useState(false);
       const [toastMessage, setToastMessage] = useState('');
 
@@ -166,7 +178,6 @@
             if (lines.length <= 1) return;
 
             const parseCSVLine = (text) => {
-              // 強力去除所有多餘的雙引號與空白
               return text.split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/).map(col => col.replace(/(^"|"$)/g, '').replace(/""/g, '"').replace(/"$/, '').trim());
             };
 
@@ -191,8 +202,8 @@
                 image: cols[3] ? cols[3].trim() : 'https://placehold.co/800',
                 description: cols[4] ? cols[4].trim() : '',
                 variants: variants.length > 0 && variants[0].name !== '預設規格' ? variants : [{name: '單一規格', price: 0, barcode: ''}],
-                // 【新增】讀取 G 欄 (第7欄) 作為商品品牌
-                brand: cols[6] ? cols[6].trim() : ''
+                brand: cols[6] ? cols[6].trim() : '',
+                promotion: cols[7] ? cols[7].trim() : ''
               };
             });
             setProducts(parsedProducts);
@@ -212,7 +223,8 @@
             const profileRef = doc(db, 'artifacts', appId, 'users', user.uid, 'profiles', 'default');
             const docSnap = await getDoc(profileRef);
             if (docSnap.exists()) {
-              setUserProfile(docSnap.data());
+              // 混合讀取的舊資料與預設值
+              setUserProfile(prev => ({ ...prev, ...docSnap.data() }));
             }
           } catch (error) {}
         };
@@ -235,12 +247,47 @@
         return () => unsubscribeOrders();
       }, [user]);
 
-      // 【更新】動態產生大分類 (含品牌區)
-      const availableMainTabs = useMemo(() => {
-        // 先抓出所有 A 欄的動物分類 (並過濾掉可能誤填的'品牌區'以防重複)
-        const tabs = [...new Set(products.flatMap(p => p.animals).filter(a => a !== '品牌區'))];
+      // 智慧解析活動標籤函數
+      const parsePromotion = (promoText, originalPrice) => {
+        if (!promoText) return { text: '', discountAmount: 0, gift: '', finalPrice: originalPrice };
         
-        // 只要有任何商品填寫了 G 欄的「品牌」，就在最後面獨立加上「品牌區」按鈕
+        let finalPrice = originalPrice;
+        let gift = '';
+        
+        // 解析折現 {-50}
+        const minusMatch = promoText.match(/\{-(\d+)\}/);
+        if (minusMatch) {
+          finalPrice -= parseInt(minusMatch[1], 10);
+        }
+        
+        // 解析打折 {8折} 或 {85折}
+        const percentMatch = promoText.match(/\{(\d{1,2})折\}/);
+        if (percentMatch) {
+          let percent = parseInt(percentMatch[1], 10);
+          if (percent < 10) percent *= 10; // 8折轉換為 80%
+          finalPrice = Math.round(finalPrice * (percent / 100));
+        }
+        
+        // 解析贈品 {贈:逗貓棒}
+        const giftMatch = promoText.match(/\{贈:([^}]+)\}/);
+        if (giftMatch) {
+          gift = giftMatch[1];
+        }
+
+        // 把給系統看的 {} 標籤拔除，留下給客人看的純文字
+        const displayText = promoText.replace(/\{[^}]+\}/g, '').trim();
+
+        return {
+          text: displayText,
+          discountAmount: originalPrice - Math.max(0, finalPrice), // 確保不會變負數
+          gift: gift,
+          finalPrice: Math.max(0, finalPrice)
+        };
+      };
+
+      // 動態產生大分類
+      const availableMainTabs = useMemo(() => {
+        const tabs = [...new Set(products.flatMap(p => p.animals).filter(a => a !== '品牌區'))];
         if (products.some(p => p.brand)) {
           tabs.push('品牌區');
         }
@@ -253,31 +300,25 @@
         }
       }, [availableMainTabs, activeTab]);
 
-      // 【更新】動態產生次分類 (依據是否在品牌區)
+      // 動態產生次分類
       const availableCategories = useMemo(() => {
         if (activeTab === '品牌區') {
-          // 如果大分類點選的是「品牌區」，小分類就列出所有的「品牌名稱」
           const brands = new Set(products.map(p => p.brand).filter(b => b));
           return ['全部', ...Array.from(brands)];
         }
-        // 否則列出該動物分類下的小分類
         const categories = new Set(products.filter(p => p.animals.includes(activeTab)).flatMap(p => p.category));
         return ['全部', ...Array.from(categories)];
       }, [products, activeTab]);
 
-      // 【更新】過濾顯示的商品 (依據是否在品牌區)
       const filteredProducts = useMemo(() => {
         return products.filter(p => {
           if (activeTab === '品牌區') {
-            // 在品牌區時，以品牌來過濾
             if (!p.brand) return false;
             if (activeCategory !== '全部' && p.brand !== activeCategory) return false;
           } else {
-            // 在一般動物分類時，以動物與商品分類來過濾
             if (!p.animals.includes(activeTab)) return false;
             if (activeCategory !== '全部' && !p.category.includes(activeCategory)) return false;
           }
-          // 搜尋關鍵字判斷
           if (searchQuery && !p.name.toLowerCase().includes(searchQuery.toLowerCase())) return false;
           return true;
         });
@@ -304,7 +345,8 @@
               name: product.name, 
               image: product.image,
               variant: variant, 
-              quantity: 1 
+              quantity: 1,
+              promotion: product.promotion
             }];
           }
         });
@@ -322,24 +364,60 @@
         });
       };
 
-      const cartTotal = cart.reduce((sum, item) => sum + (item.variant.price * item.quantity), 0);
+      // 計算總價時，納入智慧活動折抵與運費
+      const cartSubtotal = cart.reduce((sum, item) => {
+        const promo = parsePromotion(item.promotion, item.variant.price);
+        return sum + (promo.finalPrice * item.quantity);
+      }, 0);
+      const shippingFee = (cartSubtotal > 0 && cartSubtotal < FREE_SHIPPING_THRESHOLD) ? SHIPPING_FEE : 0;
+      const cartTotal = cartSubtotal + shippingFee;
       const cartTotalQuantity = cart.reduce((sum, item) => sum + item.quantity, 0);
 
       const submitOrder = async () => {
         if (cart.length === 0) return;
+        
+        // 驗證基本必填欄位
         if (!userProfile.name || !userProfile.phone || !userProfile.address) {
           showToast("請填寫完整的收件資訊！");
           return;
         }
+        
+        // 【新增】驗證動態發票欄位
+        if (userProfile.invoiceType === '統一編號' && !userProfile.taxId) {
+          showToast("請填寫統一編號！");
+          return;
+        }
+        if (userProfile.invoiceType === '雲端發票') {
+          if (!userProfile.cloudInvoiceType) {
+            showToast("請選擇雲端發票載具！");
+            return;
+          }
+          if (userProfile.cloudInvoiceType === '手機條碼' && !userProfile.mobileBarcode) {
+            showToast("請輸入手機條碼！");
+            return;
+          }
+        }
 
         try {
+          // 【新增】產生莫筆克需要的訂單編號與日期
+          const now = new Date();
+          const yyyy = now.getFullYear();
+          const mm = String(now.getMonth() + 1).padStart(2, '0');
+          const dd = String(now.getDate()).padStart(2, '0');
+          const dateStr = `${yyyy}/${mm}/${dd}`;
+          const orderIdSuffix = Math.floor(Math.random() * 10000).toString().padStart(4, '0');
+          const platformOrderId = `FatCat${yyyy}${mm}${dd}_${orderIdSuffix}`;
+
           if (user && db) {
             const profileRef = doc(db, 'artifacts', appId, 'users', user.uid, 'profiles', 'default');
             await setDoc(profileRef, userProfile);
 
             const newOrder = {
               items: cart,
+              subTotalAmount: cartSubtotal,
+              shippingFee: shippingFee,
               totalAmount: cartTotal,
+              platformOrderId: platformOrderId,
               recipient: userProfile,
               status: '處理中',
               trackingNumber: '',
@@ -349,21 +427,69 @@
             await addDoc(ordersRef, newOrder);
           }
 
+          // 將新的表單資訊寫入要傳給 LINE 的文字中
           let lineMessageText = `【肥貓客棧 - 新訂單】\n`;
+          lineMessageText += `訂單編號：${platformOrderId}\n`;
           lineMessageText += `訂購人：${userProfile.name}\n`;
           lineMessageText += `電話：${userProfile.phone}\n`;
           lineMessageText += `地址：${userProfile.address}\n`;
+          lineMessageText += `付款方式：${userProfile.paymentMethod}\n`;
+          
+          if (userProfile.buyerNote) {
+            lineMessageText += `買家備註：${userProfile.buyerNote}\n`;
+          }
+          if (userProfile.invoiceType) {
+            lineMessageText += `發票類型：${userProfile.invoiceType}\n`;
+            if (userProfile.invoiceType === '統一編號') {
+              lineMessageText += `統一編號：${userProfile.taxId}\n`;
+            } else if (userProfile.invoiceType === '雲端發票') {
+              lineMessageText += `發票載具：${userProfile.cloudInvoiceType}\n`;
+              if (userProfile.cloudInvoiceType === '手機條碼') {
+                lineMessageText += `手機條碼：${userProfile.mobileBarcode}\n`;
+              }
+            }
+          }
           lineMessageText += `------------------\n`;
+          
+          // 將折價與贈品帶入 LINE 訂單明細
           cart.forEach((item, idx) => {
+            const promo = parsePromotion(item.promotion, item.variant.price);
             lineMessageText += `${idx+1}. ${item.name} (${item.variant.name}) x${item.quantity}\n`;
-            lineMessageText += `   小計: $${item.variant.price * item.quantity}\n`;
+            if (promo.discountAmount > 0) {
+              lineMessageText += `   小計: $${promo.finalPrice * item.quantity} (已折抵$${promo.discountAmount * item.quantity})\n`;
+            } else {
+              lineMessageText += `   小計: $${promo.finalPrice * item.quantity}\n`;
+            }
             lineMessageText += `   [條碼: ${item.variant.barcode}]\n`; 
+            if (promo.text) {
+              lineMessageText += `   [活動: ${promo.text}]\n`;
+            }
+            if (promo.gift) {
+              lineMessageText += `   [🎁 贈品: ${promo.gift} x${item.quantity}]\n`;
+            }
           });
           lineMessageText += `------------------\n`;
-          lineMessageText += `總計金額：$${cartTotal}`;
+          lineMessageText += `商品小計：$${cartSubtotal}\n`;
+          if (shippingFee > 0) {
+            lineMessageText += `運費：$${shippingFee}\n`;
+          }
+          lineMessageText += `總計金額：$${cartTotal}\n\n`;
+
+          // 【新增】莫筆克匯入資料區
+          lineMessageText += `=== 莫筆克匯入資料(請複製下方內容) ===\n`;
+          const escapeCSV = (str) => '"' + (str || '').toString().replace(/"/g, '""') + '"';
+          cart.forEach((item, idx) => {
+             const promo = parsePromotion(item.promotion, item.variant.price);
+             const rowSubtotal = promo.finalPrice * item.quantity;
+             const csvRow = [
+               '自訂交易', '0', escapeCSV(userProfile.name), '', escapeCSV(userProfile.phone), '', escapeCSV(item.variant.barcode), '', item.quantity, rowSubtotal, '', '貨到付款', '新竹物流[代收]', escapeCSV(userProfile.address), escapeCSV(userProfile.buyerNote), '', escapeCSV(platformOrderId), dateStr, '', escapeCSV(userProfile.invoiceType), escapeCSV(userProfile.cloudInvoiceType), escapeCSV(userProfile.mobileBarcode), escapeCSV(userProfile.taxId)
+             ].join(',');
+             lineMessageText += csvRow + '\n';
+          });
 
           setCart([]);
           setShowCart(false);
+          setTimeout(() => setCheckoutStep(false), 300); // 重置結帳步驟
 
           if (isLiffReady && liff.isInClient()) {
             try {
@@ -396,6 +522,7 @@
       const ProductCard = ({ product }) => {
         const [selectedVariantIdx, setSelectedVariantIdx] = useState(0);
         const currentVariant = product.variants[selectedVariantIdx];
+        const promoInfo = parsePromotion(product.promotion, currentVariant?.price || 0);
 
         return (
           <div className="bg-white rounded-2xl shadow-sm border border-orange-100 overflow-hidden flex flex-col hover:shadow-md transition-shadow">
@@ -406,6 +533,11 @@
                 className="w-full h-full object-cover"
                 onError={(e) => { e.target.src = 'https://placehold.co/800x800/e2e8f0/64748b?text=Image+Error' }}
               />
+              {promoInfo.text && (
+                <div className="absolute top-0 right-0 bg-red-500 text-white text-[10px] sm:text-xs font-bold px-2 py-1 rounded-bl-lg shadow-md z-10">
+                  <i className="fas fa-gift mr-1"></i>{promoInfo.text}
+                </div>
+              )}
             </div>
             <div className="p-3 sm:p-4 flex flex-col flex-grow">
               <div className="text-[10px] sm:text-xs text-orange-600 font-medium mb-1 line-clamp-1">{product.category.join('、')}</div>
@@ -425,8 +557,13 @@
                 </select>
               </div>
 
-              <div className="flex items-center justify-between mt-auto">
-                <span className="text-lg sm:text-xl font-bold text-orange-600">${currentVariant?.price || 0}</span>
+              <div className="flex items-end justify-between mt-auto">
+                <div className="flex items-center gap-1 sm:gap-2">
+                  <span className="text-lg sm:text-xl font-bold text-orange-600">${promoInfo.finalPrice}</span>
+                  {promoInfo.discountAmount > 0 && (
+                    <span className="text-[10px] sm:text-xs text-gray-400 line-through">${currentVariant?.price || 0}</span>
+                  )}
+                </div>
                 <button 
                   onClick={() => addToCart(product, selectedVariantIdx)}
                   className="bg-orange-500 hover:bg-orange-600 text-white rounded-xl transition-colors flex items-center justify-center w-8 h-8 sm:w-10 sm:h-10 flex-shrink-0"
@@ -472,7 +609,6 @@
                   className={`min-w-[100px] flex-1 shrink-0 py-3 px-2 text-center font-bold flex items-center justify-center gap-2 transition-colors whitespace-nowrap ${activeTab === tab ? 'bg-orange-100 text-orange-700 border-b-2 border-orange-500' : 'text-gray-500 hover:bg-gray-50'}`}
                   onClick={() => { setActiveTab(tab); setActiveCategory('全部'); }}
                 >
-                  {/* 【更新】為品牌區加上專屬的吊牌圖示 */}
                   {tab === '品牌區' ? <i className="fas fa-tags"></i> : (tab.includes('貓') ? <i className="fas fa-cat"></i> : (tab.includes('狗') ? <i className="fas fa-dog"></i> : <i className="fas fa-box-open"></i>))}
                   {tab}
                 </button>
@@ -512,7 +648,7 @@
           </main>
 
           <div className="text-center text-[10px] text-gray-400 pb-2">
-            系統狀態: {liffStatus} | V1.4.5
+            系統狀態: {liffStatus} | V1.9.0
           </div>
 
           {cart.length > 0 && !showCart && (
@@ -524,10 +660,10 @@
                     <span className="text-2xl font-black text-orange-600">${cartTotal}</span>
                   </div>
                   <div className="text-xs font-bold mt-1">
-                    {cartTotal >= FREE_SHIPPING_THRESHOLD ? (
+                    {cartSubtotal >= FREE_SHIPPING_THRESHOLD ? (
                       <span className="text-green-600 bg-green-50 px-2 py-0.5 rounded">🎉 已達免運門檻</span>
                     ) : (
-                      <span className="text-red-500 bg-red-50 px-2 py-0.5 rounded">🚚 還差 ${FREE_SHIPPING_THRESHOLD - cartTotal} 免運</span>
+                      <span className="text-red-500 bg-red-50 px-2 py-0.5 rounded">🚚 需運費 ${SHIPPING_FEE} (差 ${FREE_SHIPPING_THRESHOLD - cartSubtotal} 免運)</span>
                     )}
                   </div>
                 </div>
@@ -545,8 +681,10 @@
             <div className="fixed inset-0 bg-black/50 z-50 flex justify-center items-end md:items-center p-0 md:p-4 backdrop-blur-sm transition-opacity">
               <div className="bg-white w-full max-w-lg md:rounded-3xl rounded-t-3xl h-[85vh] md:h-auto max-h-[90vh] flex flex-col overflow-hidden shadow-2xl animate-slide-up md:animate-scale-in">
                 <div className="p-4 border-b border-gray-100 flex justify-between items-center bg-gray-50">
-                  <h2 className="text-xl font-bold flex items-center gap-2"><i className="fas fa-shopping-cart"></i> 購物車</h2>
-                  <button onClick={() => setShowCart(false)} className="p-2 bg-gray-200 rounded-full hover:bg-gray-300 transition-colors w-8 h-8 flex items-center justify-center"><i className="fas fa-times"></i></button>
+                  <h2 className="text-xl font-bold flex items-center gap-2">
+                    {checkoutStep ? <><i className="fas fa-file-invoice"></i> 填寫收件資訊</> : <><i className="fas fa-shopping-cart"></i> 購物車</>}
+                  </h2>
+                  <button onClick={() => { setShowCart(false); setTimeout(() => setCheckoutStep(false), 300); }} className="p-2 bg-gray-200 rounded-full hover:bg-gray-300 transition-colors w-8 h-8 flex items-center justify-center"><i className="fas fa-times"></i></button>
                 </div>
                 
                 <div className="flex-1 overflow-y-auto p-4 hide-scrollbar">
@@ -554,35 +692,101 @@
                     <div className="text-center py-10 text-gray-400">購物車空空的耶</div>
                   ) : (
                     <div className="space-y-4">
-                      {cart.map((item, index) => (
-                        <div key={index} className="flex gap-3 bg-white p-3 border border-gray-100 rounded-xl shadow-sm">
-                          <div className="w-16 h-16 bg-gray-100 rounded-lg overflow-hidden flex-shrink-0">
-                            <img src={item.image} alt={item.name} className="w-full h-full object-cover" onError={(e) => { e.target.src = 'https://placehold.co/100' }} />
-                          </div>
-                          <div className="flex-1 flex flex-col justify-between">
-                            <div>
-                              <div className="font-bold text-sm text-gray-800 line-clamp-1">{item.name}</div>
-                              <div className="text-xs text-gray-500">{item.variant.name}</div>
+                      {!checkoutStep ? (
+                        /* --- 步驟一：確認購物車明細 --- */
+                        <>
+                          {cart.some(item => item.promotion) && (
+                            <div className="bg-red-50 border border-red-200 text-red-600 px-3 py-2 rounded-lg text-xs sm:text-sm font-bold flex items-center gap-2 mb-2 shadow-sm animate-scale-in">
+                              <i className="fas fa-bullhorn text-lg"></i>
+                              <span>您選購的商品包含專屬活動，結帳已為您享相關優惠！</span>
                             </div>
-                            <div className="flex items-center justify-between mt-2">
-                              <div className="text-orange-600 font-bold">${item.variant.price}</div>
-                              <div className="flex items-center gap-3 bg-gray-50 rounded-lg p-1 border border-gray-200">
-                                <button onClick={() => updateCartQuantity(index, -1)} className="p-1 hover:bg-white rounded shadow-sm text-gray-600 w-6 h-6 flex justify-center items-center"><i className="fas fa-minus text-xs"></i></button>
-                                <span className="text-sm font-medium w-4 text-center">{item.quantity}</span>
-                                <button onClick={() => updateCartQuantity(index, 1)} className="p-1 hover:bg-white rounded shadow-sm text-gray-600 w-6 h-6 flex justify-center items-center"><i className="fas fa-plus text-xs"></i></button>
+                          )}
+                          {cart.map((item, index) => {
+                            const promo = parsePromotion(item.promotion, item.variant.price);
+                            return (
+                              <div key={index} className="flex gap-3 bg-white p-3 border border-gray-100 rounded-xl shadow-sm">
+                                <div className="w-16 h-16 bg-gray-100 rounded-lg overflow-hidden flex-shrink-0 relative">
+                                  <img src={item.image} alt={item.name} className="w-full h-full object-cover" onError={(e) => { e.target.src = 'https://placehold.co/100' }} />
+                                </div>
+                                <div className="flex-1 flex flex-col justify-between">
+                                  <div>
+                                    <div className="font-bold text-sm text-gray-800 line-clamp-1">{item.name}</div>
+                                    <div className="text-xs text-gray-500">{item.variant.name}</div>
+                                    {promo.text && (
+                                      <div className="text-[10px] text-red-500 font-bold mt-0.5"><i className="fas fa-gift"></i> {promo.text}</div>
+                                    )}
+                                    {promo.gift && (
+                                      <div className="text-[10px] text-green-600 font-bold mt-0.5"><i className="fas fa-box-open"></i> 贈品: {promo.gift}</div>
+                                    )}
+                                  </div>
+                                  <div className="flex items-center justify-between mt-2">
+                                    <div className="flex items-end gap-1">
+                                      <div className="text-orange-600 font-bold">${promo.finalPrice}</div>
+                                      {promo.discountAmount > 0 && <div className="text-[10px] text-gray-400 line-through mb-0.5">${item.variant.price}</div>}
+                                    </div>
+                                    <div className="flex items-center gap-3 bg-gray-50 rounded-lg p-1 border border-gray-200">
+                                      <button onClick={() => updateCartQuantity(index, -1)} className="p-1 hover:bg-white rounded shadow-sm text-gray-600 w-6 h-6 flex justify-center items-center"><i className="fas fa-minus text-xs"></i></button>
+                                      <span className="text-sm font-medium w-4 text-center">{item.quantity}</span>
+                                      <button onClick={() => updateCartQuantity(index, 1)} className="p-1 hover:bg-white rounded shadow-sm text-gray-600 w-6 h-6 flex justify-center items-center"><i className="fas fa-plus text-xs"></i></button>
+                                    </div>
+                                  </div>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </>
+                      ) : (
+                        /* --- 步驟二：填寫與確認收件資訊 --- */
+                        <div className="animate-scale-in">
+                          <div className="mb-4 p-3 bg-orange-50 text-orange-800 rounded-xl text-sm font-medium border border-orange-100 flex items-start gap-2">
+                            <i className="fas fa-info-circle mt-0.5"></i>
+                            <span>請確認下方收件資訊是否正確，若有更動請直接修改。</span>
+                          </div>
+                          <div className="space-y-3">
+                            <input type="text" placeholder="收件人姓名 (必填)" value={userProfile.name || ''} onChange={e => setUserProfile({...userProfile, name: e.target.value})} className="w-full p-3 border border-gray-300 rounded-xl outline-none focus:ring-2 focus:ring-orange-300" />
+                            <input type="tel" placeholder="聯絡電話 (必填)" value={userProfile.phone || ''} onChange={e => setUserProfile({...userProfile, phone: e.target.value})} className="w-full p-3 border border-gray-300 rounded-xl outline-none focus:ring-2 focus:ring-orange-300" />
+                            <textarea placeholder="配送地址或門市資訊 (必填)" value={userProfile.address || ''} onChange={e => setUserProfile({...userProfile, address: e.target.value})} className="w-full p-3 border border-gray-300 rounded-xl outline-none focus:ring-2 focus:ring-orange-300 resize-none h-20" />
+                            
+                            {/* 相容莫筆克之系統欄位 */}
+                            <div className="p-3 bg-gray-50 border border-gray-200 rounded-xl space-y-3 mt-2">
+                              <div>
+                                <label className="block text-xs text-gray-500 mb-1">付款方式</label>
+                                <input type="text" value="貨到付款" disabled className="w-full p-3 bg-gray-100 border border-gray-200 rounded-xl text-gray-500 cursor-not-allowed font-medium" />
+                              </div>
+                              
+                              <div>
+                                <label className="block text-xs text-gray-500 mb-1">發票類型</label>
+                                <select value={userProfile.invoiceType || ''} onChange={e => setUserProfile({...userProfile, invoiceType: e.target.value, taxId: '', cloudInvoiceType: '', mobileBarcode: ''})} className="w-full p-3 border border-gray-300 rounded-xl outline-none focus:ring-2 focus:ring-orange-300 bg-white">
+                                  <option value="">不需要 / 未選擇</option>
+                                  <option value="統一編號">統一編號</option>
+                                  <option value="雲端發票">雲端發票</option>
+                                </select>
+                              </div>
+                              
+                              {userProfile.invoiceType === '統一編號' && (
+                                <div className="animate-scale-in">
+                                  <input type="text" placeholder="請輸入統一編號" value={userProfile.taxId || ''} onChange={e => setUserProfile({...userProfile, taxId: e.target.value})} className="w-full p-3 border border-gray-300 rounded-xl outline-none focus:ring-2 focus:ring-orange-300" />
+                                </div>
+                              )}
+                              
+                              {userProfile.invoiceType === '雲端發票' && (
+                                <div className="space-y-3 animate-scale-in">
+                                  <select value={userProfile.cloudInvoiceType || ''} onChange={e => setUserProfile({...userProfile, cloudInvoiceType: e.target.value, mobileBarcode: ''})} className="w-full p-3 border border-gray-300 rounded-xl outline-none focus:ring-2 focus:ring-orange-300 bg-white">
+                                    <option value="">請選擇雲端發票載具</option>
+                                    <option value="會員載具">儲存在會員內</option>
+                                    <option value="手機條碼">輸入手機條碼</option>
+                                  </select>
+                                  {userProfile.cloudInvoiceType === '手機條碼' && (
+                                    <input type="text" placeholder="請輸入手機條碼 (如: /AAA123)" value={userProfile.mobileBarcode || ''} onChange={e => setUserProfile({...userProfile, mobileBarcode: e.target.value.toUpperCase()})} className="w-full p-3 border border-gray-300 rounded-xl outline-none focus:ring-2 focus:ring-orange-300" />
+                                  )}
+                                </div>
+                              )}
+                              
+                              <div>
+                                <label className="block text-xs text-gray-500 mb-1">買家備註</label>
+                                <textarea placeholder="有什麼想告訴我們的嗎？(選填)" value={userProfile.buyerNote || ''} onChange={e => setUserProfile({...userProfile, buyerNote: e.target.value})} className="w-full p-3 border border-gray-300 rounded-xl outline-none focus:ring-2 focus:ring-orange-300 resize-none h-16" />
                               </div>
                             </div>
-                          </div>
-                        </div>
-                      ))}
-                      
-                      {ENABLE_ORDER_SUBMIT && (
-                        <div className="mt-6 border-t border-gray-200 pt-6">
-                          <h3 className="font-bold mb-4 flex items-center gap-2"><i className="fas fa-circle-info"></i> 收件資訊填寫</h3>
-                          <div className="space-y-3">
-                            <input type="text" placeholder="收件人姓名" value={userProfile.name} onChange={e => setUserProfile({...userProfile, name: e.target.value})} className="w-full p-3 border border-gray-300 rounded-xl outline-none focus:ring-2 focus:ring-orange-300" />
-                            <input type="tel" placeholder="聯絡電話" value={userProfile.phone} onChange={e => setUserProfile({...userProfile, phone: e.target.value})} className="w-full p-3 border border-gray-300 rounded-xl outline-none focus:ring-2 focus:ring-orange-300" />
-                            <textarea placeholder="配送地址或門市資訊" value={userProfile.address} onChange={e => setUserProfile({...userProfile, address: e.target.value})} className="w-full p-3 border border-gray-300 rounded-xl outline-none focus:ring-2 focus:ring-orange-300 resize-none h-20" />
                           </div>
                         </div>
                       )}
@@ -595,20 +799,34 @@
                     <div className="flex flex-col">
                       <span className="text-gray-500 font-medium text-sm mb-1">共 {cartTotalQuantity} 件商品</span>
                       <div className="text-xs font-bold">
-                        {cartTotal >= FREE_SHIPPING_THRESHOLD ? (
+                        {cartSubtotal >= FREE_SHIPPING_THRESHOLD ? (
                           <span className="text-green-600 bg-green-50 px-2 py-0.5 rounded">🎉 已達免運門檻</span>
                         ) : (
-                          <span className="text-red-500 bg-red-50 px-2 py-0.5 rounded">🚚 還差 ${FREE_SHIPPING_THRESHOLD - cartTotal} 免運</span>
+                          <span className="text-red-500 bg-red-50 px-2 py-0.5 rounded">🚚 需運費 ${SHIPPING_FEE} (差 ${FREE_SHIPPING_THRESHOLD - cartSubtotal} 免運)</span>
                         )}
                       </div>
                     </div>
                     <div className="text-right">
+                      <div className="text-gray-400 text-xs mb-1">小計 ${cartSubtotal} {shippingFee > 0 && `+ 運費 $${shippingFee}`}</div>
                       <span className="text-gray-500 text-sm mr-2">總計</span>
                       <span className="text-3xl font-black text-orange-600">${cartTotal}</span>
                     </div>
                   </div>
                   {ENABLE_ORDER_SUBMIT ? (
-                    <button onClick={submitOrder} disabled={cart.length === 0} className={`w-full py-4 rounded-xl font-bold text-lg transition-colors flex justify-center items-center gap-2 ${cart.length === 0 ? 'bg-gray-200 text-gray-400 cursor-not-allowed' : 'bg-orange-500 hover:bg-orange-600 text-white shadow-lg shadow-orange-200'}`}>傳送訂單</button>
+                    !checkoutStep ? (
+                      <button onClick={() => setCheckoutStep(true)} disabled={cart.length === 0} className={`w-full py-4 rounded-xl font-bold text-lg transition-colors flex justify-center items-center gap-2 ${cart.length === 0 ? 'bg-gray-200 text-gray-400 cursor-not-allowed' : 'bg-orange-500 hover:bg-orange-600 text-white shadow-lg shadow-orange-200'}`}>
+                        下一步：填寫收件資訊
+                      </button>
+                    ) : (
+                      <div className="flex gap-3">
+                        <button onClick={() => setCheckoutStep(false)} className="w-1/3 py-4 rounded-xl font-bold text-gray-600 bg-gray-100 hover:bg-gray-200 transition-colors">
+                          返回修改
+                        </button>
+                        <button onClick={submitOrder} className="w-2/3 py-4 rounded-xl font-bold text-lg transition-colors flex justify-center items-center gap-2 bg-orange-500 hover:bg-orange-600 text-white shadow-lg shadow-orange-200">
+                          確認傳送訂單
+                        </button>
+                      </div>
+                    )
                   ) : (
                     <div className="w-full py-4 bg-gray-100 text-gray-500 rounded-xl text-center text-sm font-medium">目前為展示模式，暫未開放下單功能</div>
                   )}
@@ -632,20 +850,38 @@
                     <div className="space-y-4">
                       {orders.map(order => (
                         <div key={order.id} className="bg-white p-4 rounded-2xl shadow-sm border border-gray-100">
-                          {/* 移除原本的狀態標籤，只保留時間 */}
                           <div className="flex justify-between items-center mb-3 pb-2 border-b border-gray-50">
                             <span className="text-xs text-gray-400">
                               {order.createdAt?.toMillis ? new Date(order.createdAt.toMillis()).toLocaleString('zh-TW') : '剛剛'}
                             </span>
                           </div>
                           <div className="space-y-2 mb-3">
-                            {order.items.map((item, idx) => (
-                              <div key={idx} className="flex justify-between text-sm">
-                                <span className="text-gray-700 truncate pr-2">{item.name} <span className="text-xs text-gray-400">({item.variant.name})</span> x{item.quantity}</span>
-                                <span className="text-gray-900 font-medium">${item.variant.price * item.quantity}</span>
-                              </div>
-                            ))}
+                            {order.items.map((item, idx) => {
+                              const promo = parsePromotion(item.promotion, item.variant.price);
+                              return (
+                                <div key={idx} className="flex flex-col mb-1">
+                                  <div className="flex justify-between text-sm">
+                                    <span className="text-gray-700 truncate pr-2">{item.name} <span className="text-xs text-gray-400">({item.variant.name})</span> x{item.quantity}</span>
+                                    <span className="text-gray-900 font-medium">${promo.finalPrice * item.quantity}</span>
+                                  </div>
+                                  {promo.text && (
+                                    <span className="text-[10px] text-red-500 font-bold"><i className="fas fa-gift"></i> {promo.text}</span>
+                                  )}
+                                  {promo.gift && (
+                                    <span className="text-[10px] text-green-600 font-bold"><i className="fas fa-box-open"></i> 🎁 贈品: {promo.gift} x{item.quantity}</span>
+                                  )}
+                                </div>
+                              );
+                            })}
                           </div>
+                          
+                          {order.shippingFee > 0 && (
+                            <div className="flex justify-between items-center py-1 text-sm text-gray-500">
+                              <span>運費</span>
+                              <span>${order.shippingFee}</span>
+                            </div>
+                          )}
+
                           <div className="flex justify-between items-center pt-3 border-t border-gray-50 font-bold">
                             <span className="text-sm text-gray-600">總計</span>
                             <span className="text-orange-600">${order.totalAmount}</span>
