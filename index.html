@@ -32,19 +32,18 @@
     /* ==============================================================================
      * 【版本公告與更新日誌】
      * ==============================================================================
-     * 版本: V1.7.0 (莫筆克系統訂單欄位整合)
+     * 版本: V1.10.0 (終極完整版 - 莫筆克整合與GAS自動化)
      * 日期: 2026-03-26
      * * 【歷史更新簡要】
-     * - V1.0-V1.4: 基礎建設、Firebase 資料庫、LIFF SDK 導入、品牌專區。
-     * 【歷史更新簡要】
      * - V1.0-V1.4: 基礎建設、Firebase 資料庫、LIFF SDK 導入、品牌專區。
      * - V1.5.0: 新增「商品活動標籤」與介面優化。
      * - V1.6.0: 智慧活動算術系統 (大括號指令，自動扣抵與加贈品)。
      * - V1.7.0: 莫筆克系統訂單欄位整合。
      * - V1.8.0: 優化結帳流程 (拆分購物車與收件資訊)。
-     * * 【V1.9.0 更新內容 (本次更新)】
-     * 1. 運費系統整合：未達免運門檻自動加計 $150 運費，並於介面與歷史訂單清楚標示。
-     * 2. 莫筆克 CSV 匯入支援：於訂單送出後，LINE 訊息最下方會自動產生「莫筆克專用 CSV 格式單行資料」，方便店家直接複製並貼上至 Google Sheets。
+     * - V1.9.0: 運費系統(未滿低消加收運費)與 LINE 訊息內建 CSV。
+     * * 【V1.10.0 更新內容】
+     * 1. 完整整合 Google Apps Script (GAS) 接收端，若填入網址將自動將訂單背景寫入 Google Sheets。
+     * 2. 提供完全無省略的乾淨代碼。
      * ============================================================================== */
     const { useState, useEffect, useMemo } = React;
 
@@ -61,11 +60,15 @@
     // 3. Google Sheets CSV 網址
     const GOOGLE_SHEETS_CSV_URL = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vT3tuEXDRx7MqpS-7LPlZ1PC0BuxjPOOg28bR-bHIV3sXYNEKhjroZG6IaYoonoWQ0eB-qamSXcP3dD/pub?output=csv';
     
+    // 4. Google Apps Script (GAS) 接收網址
+    // 請將你在 Google Sheets 發布的 Web App URL 填入下方單引號內
+    // 若保持空白，系統會將 CSV 資料直接印在 LINE 訊息內供您手動複製
+    const GAS_WEBHOOK_URL = 'https://script.google.com/macros/s/AKfycbxfqxSpfxVgACpeKtWzxm7sTLUwlnUeWwPENNp94VhtuAIUIWoewJs9caQ5UC4l2MtGHw/exec'; 
+
     const ENABLE_ORDER_SUBMIT = true; 
     const FREE_SHIPPING_THRESHOLD = 1500;
-    const SHIPPING_FEE = 150; // 【新增】未達免運門檻之運費
+    const SHIPPING_FEE = 150; 
 
-    // 加入第 7 欄與第 8 欄(含智慧指令)的示範資料
     const MOCK_CSV_DATA = `動物分類,商品分類,商品名稱,圖片網址,商品描述,規格與價格與條碼,商品品牌,商品活動\n貓貓,飼料/泌尿道保健,皇家 貓用泌尿道處方飼料,https://placehold.co/800x800/ffedd5/f97316?text=Cat+Food,專為貓咪泌尿道健康設計,1.5kg,850,BARCODE-CAT-001|3kg,1550,BARCODE-CAT-002,法國皇家,買大送小滿額贈 {-50} {贈:試吃包}`;
 
     // ============================================================================
@@ -98,7 +101,6 @@
 
     function App() {
       const [user, setUser] = useState(null); 
-      // 【修改】加入串接系統需要的額外欄位，並設定預設值
       const [userProfile, setUserProfile] = useState({ 
         name: '', phone: '', address: '', 
         paymentMethod: '貨到付款', buyerNote: '', 
@@ -115,11 +117,10 @@
       const [cart, setCart] = useState([]);
       
       const [showCart, setShowCart] = useState(false);
-      const [checkoutStep, setCheckoutStep] = useState(false); // 【新增】結帳步驟狀態
+      const [checkoutStep, setCheckoutStep] = useState(false);
       const [showHistory, setShowHistory] = useState(false);
       const [toastMessage, setToastMessage] = useState('');
 
-      // 初始化 LIFF
       useEffect(() => {
         const initLiff = async () => {
           try {
@@ -143,7 +144,6 @@
         initLiff();
       }, []);
 
-      // 初始化 Firebase Auth
       useEffect(() => {
         if (!auth) return;
         const initAuth = async () => {
@@ -166,13 +166,16 @@
         return () => unsubscribe();
       }, []);
 
-      // 載入 Google Sheets
       useEffect(() => {
         const loadData = async () => {
           try {
-            if (!GOOGLE_SHEETS_CSV_URL) return;
-            const response = await fetch(GOOGLE_SHEETS_CSV_URL);
-            const csvText = await response.text();
+            let csvText = '';
+            if (GOOGLE_SHEETS_CSV_URL) {
+              const response = await fetch(GOOGLE_SHEETS_CSV_URL);
+              csvText = await response.text();
+            } else {
+              csvText = MOCK_CSV_DATA;
+            }
             
             const lines = csvText.split('\n').filter(line => line.trim() !== '');
             if (lines.length <= 1) return;
@@ -214,7 +217,6 @@
         loadData();
       }, []);
 
-      // 載入 Firebase 資料
       useEffect(() => {
         if (!user || !db) return;
 
@@ -223,7 +225,6 @@
             const profileRef = doc(db, 'artifacts', appId, 'users', user.uid, 'profiles', 'default');
             const docSnap = await getDoc(profileRef);
             if (docSnap.exists()) {
-              // 混合讀取的舊資料與預設值
               setUserProfile(prev => ({ ...prev, ...docSnap.data() }));
             }
           } catch (error) {}
@@ -247,45 +248,39 @@
         return () => unsubscribeOrders();
       }, [user]);
 
-      // 智慧解析活動標籤函數
       const parsePromotion = (promoText, originalPrice) => {
         if (!promoText) return { text: '', discountAmount: 0, gift: '', finalPrice: originalPrice };
         
         let finalPrice = originalPrice;
         let gift = '';
         
-        // 解析折現 {-50}
         const minusMatch = promoText.match(/\{-(\d+)\}/);
         if (minusMatch) {
           finalPrice -= parseInt(minusMatch[1], 10);
         }
         
-        // 解析打折 {8折} 或 {85折}
         const percentMatch = promoText.match(/\{(\d{1,2})折\}/);
         if (percentMatch) {
           let percent = parseInt(percentMatch[1], 10);
-          if (percent < 10) percent *= 10; // 8折轉換為 80%
+          if (percent < 10) percent *= 10; 
           finalPrice = Math.round(finalPrice * (percent / 100));
         }
         
-        // 解析贈品 {贈:逗貓棒}
         const giftMatch = promoText.match(/\{贈:([^}]+)\}/);
         if (giftMatch) {
           gift = giftMatch[1];
         }
 
-        // 把給系統看的 {} 標籤拔除，留下給客人看的純文字
         const displayText = promoText.replace(/\{[^}]+\}/g, '').trim();
 
         return {
           text: displayText,
-          discountAmount: originalPrice - Math.max(0, finalPrice), // 確保不會變負數
+          discountAmount: originalPrice - Math.max(0, finalPrice), 
           gift: gift,
           finalPrice: Math.max(0, finalPrice)
         };
       };
 
-      // 動態產生大分類
       const availableMainTabs = useMemo(() => {
         const tabs = [...new Set(products.flatMap(p => p.animals).filter(a => a !== '品牌區'))];
         if (products.some(p => p.brand)) {
@@ -300,7 +295,6 @@
         }
       }, [availableMainTabs, activeTab]);
 
-      // 動態產生次分類
       const availableCategories = useMemo(() => {
         if (activeTab === '品牌區') {
           const brands = new Set(products.map(p => p.brand).filter(b => b));
@@ -364,7 +358,6 @@
         });
       };
 
-      // 計算總價時，納入智慧活動折抵與運費
       const cartSubtotal = cart.reduce((sum, item) => {
         const promo = parsePromotion(item.promotion, item.variant.price);
         return sum + (promo.finalPrice * item.quantity);
@@ -376,13 +369,11 @@
       const submitOrder = async () => {
         if (cart.length === 0) return;
         
-        // 驗證基本必填欄位
         if (!userProfile.name || !userProfile.phone || !userProfile.address) {
           showToast("請填寫完整的收件資訊！");
           return;
         }
         
-        // 【新增】驗證動態發票欄位
         if (userProfile.invoiceType === '統一編號' && !userProfile.taxId) {
           showToast("請填寫統一編號！");
           return;
@@ -399,7 +390,6 @@
         }
 
         try {
-          // 【新增】產生莫筆克需要的訂單編號與日期
           const now = new Date();
           const yyyy = now.getFullYear();
           const mm = String(now.getMonth() + 1).padStart(2, '0');
@@ -427,7 +417,6 @@
             await addDoc(ordersRef, newOrder);
           }
 
-          // 將新的表單資訊寫入要傳給 LINE 的文字中
           let lineMessageText = `【肥貓客棧 - 新訂單】\n`;
           lineMessageText += `訂單編號：${platformOrderId}\n`;
           lineMessageText += `訂購人：${userProfile.name}\n`;
@@ -451,14 +440,17 @@
           }
           lineMessageText += `------------------\n`;
           
-          // 將折價與贈品帶入 LINE 訂單明細
+          const gasRows = [];
+
           cart.forEach((item, idx) => {
             const promo = parsePromotion(item.promotion, item.variant.price);
+            const rowSubtotal = promo.finalPrice * item.quantity;
+            
             lineMessageText += `${idx+1}. ${item.name} (${item.variant.name}) x${item.quantity}\n`;
             if (promo.discountAmount > 0) {
-              lineMessageText += `   小計: $${promo.finalPrice * item.quantity} (已折抵$${promo.discountAmount * item.quantity})\n`;
+              lineMessageText += `   小計: $${rowSubtotal} (已折抵$${promo.discountAmount * item.quantity})\n`;
             } else {
-              lineMessageText += `   小計: $${promo.finalPrice * item.quantity}\n`;
+              lineMessageText += `   小計: $${rowSubtotal}\n`;
             }
             lineMessageText += `   [條碼: ${item.variant.barcode}]\n`; 
             if (promo.text) {
@@ -467,7 +459,34 @@
             if (promo.gift) {
               lineMessageText += `   [🎁 贈品: ${promo.gift} x${item.quantity}]\n`;
             }
+
+            gasRows.push([
+              '自訂交易', 
+              '0', 
+              userProfile.name || '', 
+              '', 
+              userProfile.phone || '', 
+              '', 
+              item.variant.barcode || '', 
+              '', 
+              item.quantity, 
+              rowSubtotal, 
+              '', 
+              '貨到付款', 
+              '新竹物流[代收]', 
+              userProfile.address || '', 
+              userProfile.buyerNote || '', 
+              '', 
+              platformOrderId, 
+              dateStr, 
+              '', 
+              userProfile.invoiceType || '', 
+              userProfile.cloudInvoiceType || '', 
+              userProfile.mobileBarcode || '', 
+              userProfile.taxId || ''
+            ]);
           });
+          
           lineMessageText += `------------------\n`;
           lineMessageText += `商品小計：$${cartSubtotal}\n`;
           if (shippingFee > 0) {
@@ -475,21 +494,29 @@
           }
           lineMessageText += `總計金額：$${cartTotal}\n\n`;
 
-          // 【新增】莫筆克匯入資料區
-          lineMessageText += `=== 莫筆克匯入資料(請複製下方內容) ===\n`;
-          const escapeCSV = (str) => '"' + (str || '').toString().replace(/"/g, '""') + '"';
-          cart.forEach((item, idx) => {
-             const promo = parsePromotion(item.promotion, item.variant.price);
-             const rowSubtotal = promo.finalPrice * item.quantity;
-             const csvRow = [
-               '自訂交易', '0', escapeCSV(userProfile.name), '', escapeCSV(userProfile.phone), '', escapeCSV(item.variant.barcode), '', item.quantity, rowSubtotal, '', '貨到付款', '新竹物流[代收]', escapeCSV(userProfile.address), escapeCSV(userProfile.buyerNote), '', escapeCSV(platformOrderId), dateStr, '', escapeCSV(userProfile.invoiceType), escapeCSV(userProfile.cloudInvoiceType), escapeCSV(userProfile.mobileBarcode), escapeCSV(userProfile.taxId)
-             ].join(',');
-             lineMessageText += csvRow + '\n';
-          });
+          if (!GAS_WEBHOOK_URL) {
+            lineMessageText += `=== 莫筆克匯入資料(請複製下方內容) ===\n`;
+            const escapeCSV = (str) => '"' + (str || '').toString().replace(/"/g, '""') + '"';
+            gasRows.forEach(row => {
+               lineMessageText += row.map(escapeCSV).join(',') + '\n';
+            });
+          }
 
           setCart([]);
           setShowCart(false);
-          setTimeout(() => setCheckoutStep(false), 300); // 重置結帳步驟
+          setTimeout(() => setCheckoutStep(false), 300);
+
+          if (GAS_WEBHOOK_URL) {
+            try {
+              fetch(GAS_WEBHOOK_URL, {
+                method: 'POST',
+                headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+                body: JSON.stringify({ rows: gasRows })
+              }).catch(e => console.error("GAS 傳送錯誤", e));
+            } catch (error) {
+              console.error("GAS 執行錯誤:", error);
+            }
+          }
 
           if (isLiffReady && liff.isInClient()) {
             try {
@@ -648,7 +675,7 @@
           </main>
 
           <div className="text-center text-[10px] text-gray-400 pb-2">
-            系統狀態: {liffStatus} | V1.9.0
+            系統狀態: {liffStatus} | V1.10.0
           </div>
 
           {cart.length > 0 && !showCart && (
@@ -693,7 +720,6 @@
                   ) : (
                     <div className="space-y-4">
                       {!checkoutStep ? (
-                        /* --- 步驟一：確認購物車明細 --- */
                         <>
                           {cart.some(item => item.promotion) && (
                             <div className="bg-red-50 border border-red-200 text-red-600 px-3 py-2 rounded-lg text-xs sm:text-sm font-bold flex items-center gap-2 mb-2 shadow-sm animate-scale-in">
@@ -736,7 +762,6 @@
                           })}
                         </>
                       ) : (
-                        /* --- 步驟二：填寫與確認收件資訊 --- */
                         <div className="animate-scale-in">
                           <div className="mb-4 p-3 bg-orange-50 text-orange-800 rounded-xl text-sm font-medium border border-orange-100 flex items-start gap-2">
                             <i className="fas fa-info-circle mt-0.5"></i>
@@ -747,7 +772,6 @@
                             <input type="tel" placeholder="聯絡電話 (必填)" value={userProfile.phone || ''} onChange={e => setUserProfile({...userProfile, phone: e.target.value})} className="w-full p-3 border border-gray-300 rounded-xl outline-none focus:ring-2 focus:ring-orange-300" />
                             <textarea placeholder="配送地址或門市資訊 (必填)" value={userProfile.address || ''} onChange={e => setUserProfile({...userProfile, address: e.target.value})} className="w-full p-3 border border-gray-300 rounded-xl outline-none focus:ring-2 focus:ring-orange-300 resize-none h-20" />
                             
-                            {/* 相容莫筆克之系統欄位 */}
                             <div className="p-3 bg-gray-50 border border-gray-200 rounded-xl space-y-3 mt-2">
                               <div>
                                 <label className="block text-xs text-gray-500 mb-1">付款方式</label>
