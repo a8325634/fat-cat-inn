@@ -32,15 +32,14 @@
     /* ==============================================================================
      * 【版本公告與更新日誌】
      * ==============================================================================
-     * 版本: V1.16.0 (超商電子地圖完整串接版)
+     * 版本: V1.17.0 (超商地圖跳轉完美修復版)
      * 日期: 2026-03-28
      * * 【歷史更新簡要】
-     * - V1.0-V1.14.0: 基礎建設、Firebase、LIFF、活動算術、防呆辨識、綠界介面準備。
-     * - V1.15.0: 綠界金流正式串接，完成付款跳轉與加密。
-     * * 【V1.16.0 更新內容】
-     * 1. 完整實作綠界 CvsMap 超商電子地圖串接。
-     * 2. 新增「跳轉狀態保留機制」：利用 localStorage 暫存購物車與個資，選完門市自動還原。
-     * 3. 支援選擇超商體系 (7-11、全家、萊爾富)。
+     * - V1.0-V1.15.0: 基礎建設、Firebase、LIFF、防呆辨識、綠界金流串接。
+     * - V1.16.0: 實作綠界超商電子地圖串接與 localStorage 暫存機制。
+     * * 【V1.17.0 更新內容 (本次更新)】
+     * 1. 修復超商地圖返回後變成外部網頁的問題（強制鎖定 LIFF 網址為接駁點）。
+     * 2. 修復在 GAS 部署環境下，因為 iframe 導致無法讀取門市參數，造成購物車被清空的問題。
      * ============================================================================== */
     const { useState, useEffect, useMemo } = React;
 
@@ -119,13 +118,9 @@
       const [showHistory, setShowHistory] = useState(false);
       const [toastMessage, setToastMessage] = useState('');
 
-      // 【V1.16.0 更新】攔截超商地圖回傳的參數，並還原購物車與表單
+      // 【V1.17.0 更新】攔截超商地圖回傳的參數，並相容 GAS iframe 環境
       useEffect(() => {
-        const urlParams = new URLSearchParams(window.location.search);
-        const storeName = urlParams.get('storeName');
-        const storeAddress = urlParams.get('storeAddress');
-
-        if (storeName) {
+        const handleRestore = (storeName, storeAddress) => {
           const savedCart = localStorage.getItem('fatcat_temp_cart');
           const savedProfile = localStorage.getItem('fatcat_temp_profile');
 
@@ -143,7 +138,25 @@
 
           localStorage.removeItem('fatcat_temp_cart');
           localStorage.removeItem('fatcat_temp_profile');
+        };
+
+        // 1. 標準網頁環境讀取法
+        const urlParams = new URLSearchParams(window.location.search);
+        const storeName = urlParams.get('storeName');
+        const storeAddress = urlParams.get('storeAddress');
+
+        if (storeName) {
+          handleRestore(storeName, storeAddress);
           window.history.replaceState({}, document.title, window.location.pathname);
+        } else {
+          // 2. GAS 環境讀取法 (解決被 iframe 擋住參數的問題)
+          if (typeof google !== 'undefined' && google.script && google.script.url) {
+            google.script.url.getLocation(function(location) {
+              if (location.parameter && location.parameter.storeName) {
+                handleRestore(location.parameter.storeName, location.parameter.storeAddress);
+              }
+            });
+          }
         }
       }, []);
 
@@ -391,23 +404,25 @@
         });
       };
 
-      // 【V1.16.0 更新】發送請求開啟綠界超商地圖
+      // 【V1.17.0 更新】強制設定 LIFF 為跳轉回傳點，確保回到 LINE 內
       const openCvsMap = () => {
         if (!ECPAY_BACKEND_URL) {
           showToast('請先填入綠界後端 API 網址！');
           return;
         }
 
-        // 1. 儲存目前進度到瀏覽器
         localStorage.setItem('fatcat_temp_cart', JSON.stringify(cart));
         localStorage.setItem('fatcat_temp_profile', JSON.stringify(userProfile));
 
-        // 2. 建立隱藏表單傳送至綠界物流 API
         const form = document.createElement('form');
         form.method = 'POST';
         form.action = 'https://logistics-stage.ecpay.com.tw/Express/map';
 
-        const currentUrl = window.location.href.split('?')[0];
+        let returnUrl = window.location.href.split('?')[0];
+        // 確保接駁網址是 LIFF，這樣使用者回傳後才會留在 LINE
+        if (LIFF_ID && LIFF_ID !== '請在此填入你的_LIFF_ID') {
+          returnUrl = `https://liff.line.me/${LIFF_ID}`;
+        }
 
         const params = {
           MerchantID: '2000132',
@@ -415,7 +430,7 @@
           LogisticsSubType: userProfile.cvsSubType || 'UNIMART',
           IsCollection: 'N',
           ServerReplyURL: ECPAY_BACKEND_URL, 
-          ExtraData: currentUrl // 將網址帶給 GAS 讓它能跳回來
+          ExtraData: returnUrl 
         };
 
         for (const key in params) {
@@ -789,7 +804,7 @@
           </main>
 
           <div className="text-center text-[10px] text-gray-400 pb-2">
-            系統狀態: {liffStatus} | V1.16.0
+            系統狀態: {liffStatus} | V1.17.0
           </div>
 
           {cart.length > 0 && !showCart && (
@@ -918,7 +933,7 @@
                                 </select>
                               </div>
 
-                              {/* 【V1.16.0 更新】超商地圖按鈕與體系選擇 */}
+                              {/* 【V1.17.0 更新】超商地圖按鈕 */}
                               {userProfile.shippingMethod === '超商取貨 (綠界)' && (
                                 <div className="mt-3 animate-scale-in p-3 bg-orange-50 border border-orange-200 rounded-xl">
                                   <label className="block text-xs text-orange-800 mb-2 font-bold"><i className="fas fa-store"></i> 選擇超商門市</label>
