@@ -32,18 +32,15 @@
     /* ==============================================================================
      * 【版本公告與更新日誌】
      * ==============================================================================
-     * 版本: V1.10.0 (終極完整版 - 莫筆克整合與GAS自動化)
-     * 日期: 2026-03-26
+     * 版本: V1.13.0 (防呆辨識優化版)
+     * 日期: 2026-03-27
      * * 【歷史更新簡要】
-     * - V1.0-V1.4: 基礎建設、Firebase 資料庫、LIFF SDK 導入、品牌專區。
-     * - V1.5.0: 新增「商品活動標籤」與介面優化。
-     * - V1.6.0: 智慧活動算術系統 (大括號指令，自動扣抵與加贈品)。
-     * - V1.7.0: 莫筆克系統訂單欄位整合。
-     * - V1.8.0: 優化結帳流程 (拆分購物車與收件資訊)。
-     * - V1.9.0: 運費系統(未滿低消加收運費)與 LINE 訊息內建 CSV。
-     * * 【V1.10.0 更新內容】
-     * 1. 完整整合 Google Apps Script (GAS) 接收端，若填入網址將自動將訂單背景寫入 Google Sheets。
-     * 2. 提供完全無省略的乾淨代碼。
+     * - V1.0-V1.9.0: 基礎建設、Firebase、LIFF、品牌專區、智慧活動算術、莫筆克欄位、運費系統。
+     * - V1.10.0: 完整整合 Google Apps Script (GAS) 接收端自動寫入。
+     * - V1.11.0: 支援「多行同商品」管理，更新 11 欄位架構。
+     * - V1.12.0: 介面優化：當 Google Sheets 只有標題尚未填入商品時，顯示「商品建置中」的友善提示。
+     * * 【V1.13.0 更新內容 (本次更新)】
+     * 1. 增強防呆機制：若 Google Sheets 漏填「商品ID」，系統將自動降級使用「商品名稱」作為合併規格的判斷依據。
      * ============================================================================== */
     const { useState, useEffect, useMemo } = React;
 
@@ -69,7 +66,7 @@
     const FREE_SHIPPING_THRESHOLD = 1500;
     const SHIPPING_FEE = 150; 
 
-    const MOCK_CSV_DATA = `動物分類,商品分類,商品名稱,圖片網址,商品描述,規格與價格與條碼,商品品牌,商品活動\n貓貓,飼料/泌尿道保健,皇家 貓用泌尿道處方飼料,https://placehold.co/800x800/ffedd5/f97316?text=Cat+Food,專為貓咪泌尿道健康設計,1.5kg,850,BARCODE-CAT-001|3kg,1550,BARCODE-CAT-002,法國皇家,買大送小滿額贈 {-50} {贈:試吃包}`;
+    const MOCK_CSV_DATA = `商品ID,動物分類,商品分類,商品名稱,圖片網址,商品描述,規格名稱,價格,條碼,商品品牌,商品活動\nP001,貓貓,飼料/泌尿道保健,皇家 貓用泌尿道處方飼料,https://placehold.co/800x800/ffedd5/f97316?text=Cat+Food,專為貓咪泌尿道健康設計,1.5kg,850,BARCODE-CAT-001,法國皇家,買大送小滿額贈 {-50} {贈:試吃包}\nP001,貓貓,飼料/泌尿道保健,皇家 貓用泌尿道處方飼料,https://placehold.co/800x800/ffedd5/f97316?text=Cat+Food,專為貓咪泌尿道健康設計,3kg,1550,BARCODE-CAT-002,法國皇家,買大送小滿額贈 {-50} {贈:試吃包}`;
 
     // ============================================================================
     // ⚠️ 【Firebase 金鑰區】 ⚠️
@@ -184,32 +181,40 @@
               return text.split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/).map(col => col.replace(/(^"|"$)/g, '').replace(/""/g, '"').replace(/"$/, '').trim());
             };
 
-            const parsedProducts = lines.slice(1).map((line, index) => {
-              const cols = parseCSVLine(line); 
-              const variantsRaw = cols[5] || '';
-              
-              const variants = variantsRaw.split('|').map(v => {
-                const [vName, vPrice, vBarcode] = v.split(',');
-                return {
-                  name: vName ? vName.replace(/"/g, '').trim() : '預設規格',
-                  price: parseInt(vPrice) || 0,
-                  barcode: vBarcode ? vBarcode.replace(/"/g, '').trim() : '' 
-                };
-              });
+            const productMap = {};
 
-              return {
-                id: `prod_${index}`,
-                animals: cols[0] ? cols[0].split('/').map(a => a.trim()) : ['未分類'], 
-                category: cols[1] ? cols[1].split('/').map(c => c.trim()) : ['未分類'], 
-                name: cols[2] ? cols[2].trim() : '未命名商品',
-                image: cols[3] ? cols[3].trim() : 'https://placehold.co/800',
-                description: cols[4] ? cols[4].trim() : '',
-                variants: variants.length > 0 && variants[0].name !== '預設規格' ? variants : [{name: '單一規格', price: 0, barcode: ''}],
-                brand: cols[6] ? cols[6].trim() : '',
-                promotion: cols[7] ? cols[7].trim() : ''
+            lines.slice(1).forEach((line, index) => {
+              const cols = parseCSVLine(line); 
+              
+              // 【V1.13.0 優化】如果沒有填寫商品ID，自動降級使用「商品名稱」作為合併依據
+              const rawId = cols[0] ? cols[0].trim() : '';
+              const prodName = cols[3] ? cols[3].trim() : '';
+              const prodId = rawId || prodName || `temp_id_${index}`;
+              
+              const variant = {
+                name: cols[6] ? cols[6].trim() : '預設規格',
+                price: parseInt(cols[7]) || 0,
+                barcode: cols[8] ? cols[8].trim() : ''
               };
+
+              if (!productMap[prodId]) {
+                productMap[prodId] = {
+                  id: prodId,
+                  animals: cols[1] ? cols[1].split('/').map(a => a.trim()) : ['未分類'], 
+                  category: cols[2] ? cols[2].split('/').map(c => c.trim()) : ['未分類'], 
+                  name: cols[3] ? cols[3].trim() : '未命名商品',
+                  image: cols[4] ? cols[4].trim() : 'https://placehold.co/800',
+                  description: cols[5] ? cols[5].trim() : '',
+                  variants: [variant],
+                  brand: cols[9] ? cols[9].trim() : '',
+                  promotion: cols[10] ? cols[10].trim() : ''
+                };
+              } else {
+                productMap[prodId].variants.push(variant);
+              }
             });
-            setProducts(parsedProducts);
+            
+            setProducts(Object.values(productMap));
           } catch (error) {
             console.error("載入商品資料失敗:", error);
           }
@@ -510,6 +515,7 @@
             try {
               fetch(GAS_WEBHOOK_URL, {
                 method: 'POST',
+                mode: 'no-cors', /* 【新增】強制無視瀏覽器跨域阻擋，確保資料順利送出 */
                 headers: { 'Content-Type': 'text/plain;charset=utf-8' },
                 body: JSON.stringify({ rows: gasRows })
               }).catch(e => console.error("GAS 傳送錯誤", e));
@@ -660,7 +666,12 @@
               ))}
             </div>
 
-            {filteredProducts.length === 0 ? (
+            {products.length === 0 ? (
+              <div className="text-center py-20 text-gray-400 flex flex-col items-center">
+                <i className="fas fa-tools text-4xl mb-4 opacity-50"></i>
+                <p>商品努力建置中，敬請期待！</p>
+              </div>
+            ) : filteredProducts.length === 0 ? (
               <div className="text-center py-20 text-gray-400 flex flex-col items-center">
                 <i className="fas fa-box-open text-4xl mb-4 opacity-50"></i>
                 <p>找不到符合條件的商品</p>
@@ -675,7 +686,7 @@
           </main>
 
           <div className="text-center text-[10px] text-gray-400 pb-2">
-            系統狀態: {liffStatus} | V1.10.0
+            系統狀態: {liffStatus} | V1.13.0
           </div>
 
           {cart.length > 0 && !showCart && (
