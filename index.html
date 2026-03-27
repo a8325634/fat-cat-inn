@@ -32,15 +32,15 @@
     /* ==============================================================================
      * 【版本公告與更新日誌】
      * ==============================================================================
-     * 版本: V1.13.0 (防呆辨識優化版)
-     * 日期: 2026-03-27
+     * 版本: V1.16.0 (超商電子地圖完整串接版)
+     * 日期: 2026-03-28
      * * 【歷史更新簡要】
-     * - V1.0-V1.9.0: 基礎建設、Firebase、LIFF、品牌專區、智慧活動算術、莫筆克欄位、運費系統。
-     * - V1.10.0: 完整整合 Google Apps Script (GAS) 接收端自動寫入。
-     * - V1.11.0: 支援「多行同商品」管理，更新 11 欄位架構。
-     * - V1.12.0: 介面優化：當 Google Sheets 只有標題尚未填入商品時，顯示「商品建置中」的友善提示。
-     * * 【V1.13.0 更新內容 (本次更新)】
-     * 1. 增強防呆機制：若 Google Sheets 漏填「商品ID」，系統將自動降級使用「商品名稱」作為合併規格的判斷依據。
+     * - V1.0-V1.14.0: 基礎建設、Firebase、LIFF、活動算術、防呆辨識、綠界介面準備。
+     * - V1.15.0: 綠界金流正式串接，完成付款跳轉與加密。
+     * * 【V1.16.0 更新內容】
+     * 1. 完整實作綠界 CvsMap 超商電子地圖串接。
+     * 2. 新增「跳轉狀態保留機制」：利用 localStorage 暫存購物車與個資，選完門市自動還原。
+     * 3. 支援選擇超商體系 (7-11、全家、萊爾富)。
      * ============================================================================== */
     const { useState, useEffect, useMemo } = React;
 
@@ -57,10 +57,11 @@
     // 3. Google Sheets CSV 網址
     const GOOGLE_SHEETS_CSV_URL = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vT3tuEXDRx7MqpS-7LPlZ1PC0BuxjPOOg28bR-bHIV3sXYNEKhjroZG6IaYoonoWQ0eB-qamSXcP3dD/pub?output=csv';
     
-    // 4. Google Apps Script (GAS) 接收網址
-    // 請將你在 Google Sheets 發布的 Web App URL 填入下方單引號內
-    // 若保持空白，系統會將 CSV 資料直接印在 LINE 訊息內供您手動複製
+    // 4. Google Apps Script (GAS) 接收網址 (紀錄莫筆克訂單用)
     const GAS_WEBHOOK_URL = 'https://script.google.com/macros/s/AKfycbxfqxSpfxVgACpeKtWzxm7sTLUwlnUeWwPENNp94VhtuAIUIWoewJs9caQ5UC4l2MtGHw/exec'; 
+
+    // 5. 綠界金流後端 API 網址 (🔥請填入你剛剛部署 ecpay_backend.gs 產生的網址🔥)
+    const ECPAY_BACKEND_URL = 'https://script.google.com/macros/s/AKfycbwhB1OL9ih-sXV4gIsyZjPFli8s0E8IHMlRz6txch3Nm2s2VuwVoUp9uUfs6CoA2lyh/exec';
 
     const ENABLE_ORDER_SUBMIT = true; 
     const FREE_SHIPPING_THRESHOLD = 1500;
@@ -100,8 +101,8 @@
       const [user, setUser] = useState(null); 
       const [userProfile, setUserProfile] = useState({ 
         name: '', phone: '', address: '', 
-        paymentMethod: '貨到付款', buyerNote: '', 
-        invoiceType: '', taxId: '', cloudInvoiceType: '', mobileBarcode: '' 
+        paymentMethod: '信用卡 (綠界)', shippingMethod: '宅配', cvsStoreName: '', cvsSubType: 'UNIMART',
+        buyerNote: '', invoiceType: '', taxId: '', cloudInvoiceType: '', mobileBarcode: '' 
       });
       const [orders, setOrders] = useState([]);
       const [isLiffReady, setIsLiffReady] = useState(false);
@@ -117,6 +118,34 @@
       const [checkoutStep, setCheckoutStep] = useState(false);
       const [showHistory, setShowHistory] = useState(false);
       const [toastMessage, setToastMessage] = useState('');
+
+      // 【V1.16.0 更新】攔截超商地圖回傳的參數，並還原購物車與表單
+      useEffect(() => {
+        const urlParams = new URLSearchParams(window.location.search);
+        const storeName = urlParams.get('storeName');
+        const storeAddress = urlParams.get('storeAddress');
+
+        if (storeName) {
+          const savedCart = localStorage.getItem('fatcat_temp_cart');
+          const savedProfile = localStorage.getItem('fatcat_temp_profile');
+
+          if (savedCart) setCart(JSON.parse(savedCart));
+          if (savedProfile) {
+            const profile = JSON.parse(savedProfile);
+            profile.cvsStoreName = storeName;
+            profile.address = storeAddress;
+            profile.shippingMethod = '超商取貨 (綠界)';
+            setUserProfile(profile);
+          }
+
+          setShowCart(true);
+          setCheckoutStep(true);
+
+          localStorage.removeItem('fatcat_temp_cart');
+          localStorage.removeItem('fatcat_temp_profile');
+          window.history.replaceState({}, document.title, window.location.pathname);
+        }
+      }, []);
 
       useEffect(() => {
         const initLiff = async () => {
@@ -186,7 +215,6 @@
             lines.slice(1).forEach((line, index) => {
               const cols = parseCSVLine(line); 
               
-              // 【V1.13.0 優化】如果沒有填寫商品ID，自動降級使用「商品名稱」作為合併依據
               const rawId = cols[0] ? cols[0].trim() : '';
               const prodName = cols[3] ? cols[3].trim() : '';
               const prodId = rawId || prodName || `temp_id_${index}`;
@@ -363,6 +391,45 @@
         });
       };
 
+      // 【V1.16.0 更新】發送請求開啟綠界超商地圖
+      const openCvsMap = () => {
+        if (!ECPAY_BACKEND_URL) {
+          showToast('請先填入綠界後端 API 網址！');
+          return;
+        }
+
+        // 1. 儲存目前進度到瀏覽器
+        localStorage.setItem('fatcat_temp_cart', JSON.stringify(cart));
+        localStorage.setItem('fatcat_temp_profile', JSON.stringify(userProfile));
+
+        // 2. 建立隱藏表單傳送至綠界物流 API
+        const form = document.createElement('form');
+        form.method = 'POST';
+        form.action = 'https://logistics-stage.ecpay.com.tw/Express/map';
+
+        const currentUrl = window.location.href.split('?')[0];
+
+        const params = {
+          MerchantID: '2000132',
+          LogisticsType: 'CVS',
+          LogisticsSubType: userProfile.cvsSubType || 'UNIMART',
+          IsCollection: 'N',
+          ServerReplyURL: ECPAY_BACKEND_URL, 
+          ExtraData: currentUrl // 將網址帶給 GAS 讓它能跳回來
+        };
+
+        for (const key in params) {
+          const input = document.createElement('input');
+          input.type = 'hidden';
+          input.name = key;
+          input.value = params[key];
+          form.appendChild(input);
+        }
+
+        document.body.appendChild(form);
+        form.submit();
+      };
+
       const cartSubtotal = cart.reduce((sum, item) => {
         const promo = parsePromotion(item.promotion, item.variant.price);
         return sum + (promo.finalPrice * item.quantity);
@@ -374,6 +441,11 @@
       const submitOrder = async () => {
         if (cart.length === 0) return;
         
+        if (userProfile.shippingMethod === '超商取貨 (綠界)' && !userProfile.address) {
+          showToast("請選擇超商取貨門市！");
+          return;
+        }
+
         if (!userProfile.name || !userProfile.phone || !userProfile.address) {
           showToast("請填寫完整的收件資訊！");
           return;
@@ -426,7 +498,8 @@
           lineMessageText += `訂單編號：${platformOrderId}\n`;
           lineMessageText += `訂購人：${userProfile.name}\n`;
           lineMessageText += `電話：${userProfile.phone}\n`;
-          lineMessageText += `地址：${userProfile.address}\n`;
+          lineMessageText += `配送方式：${userProfile.shippingMethod}\n`;
+          lineMessageText += `地址/門市：${userProfile.address}\n`;
           lineMessageText += `付款方式：${userProfile.paymentMethod}\n`;
           
           if (userProfile.buyerNote) {
@@ -477,8 +550,8 @@
               item.quantity, 
               rowSubtotal, 
               '', 
-              '貨到付款', 
-              '新竹物流[代收]', 
+              userProfile.paymentMethod || '貨到付款', 
+              userProfile.shippingMethod || '宅配', 
               userProfile.address || '', 
               userProfile.buyerNote || '', 
               '', 
@@ -507,21 +580,51 @@
             });
           }
 
-          setCart([]);
-          setShowCart(false);
-          setTimeout(() => setCheckoutStep(false), 300);
+          const isECPayRequired = userProfile.paymentMethod !== '貨到付款' && ECPAY_BACKEND_URL;
+
+          if (!isECPayRequired) {
+            setCart([]);
+            setShowCart(false);
+            setTimeout(() => setCheckoutStep(false), 300);
+          }
 
           if (GAS_WEBHOOK_URL) {
             try {
               fetch(GAS_WEBHOOK_URL, {
                 method: 'POST',
-                mode: 'no-cors', /* 【新增】強制無視瀏覽器跨域阻擋，確保資料順利送出 */
+                mode: 'no-cors', 
                 headers: { 'Content-Type': 'text/plain;charset=utf-8' },
                 body: JSON.stringify({ rows: gasRows })
               }).catch(e => console.error("GAS 傳送錯誤", e));
             } catch (error) {
               console.error("GAS 執行錯誤:", error);
             }
+          }
+
+          if (isECPayRequired) {
+             showToast("正在為您導向綠界安全付款頁面...");
+             
+             const form = document.createElement('form');
+             form.method = 'POST';
+             form.action = ECPAY_BACKEND_URL;
+             
+             const dataInput = document.createElement('input');
+             dataInput.type = 'hidden';
+             dataInput.name = 'orderData';
+             dataInput.value = JSON.stringify({
+                orderId: platformOrderId,
+                amount: cartTotal,
+                items: cart.map(i => `${i.name} x${i.quantity}`).join('#'), 
+                paymentMethod: userProfile.paymentMethod,
+                buyerName: userProfile.name,
+                buyerPhone: userProfile.phone
+             });
+             
+             form.appendChild(dataInput);
+             document.body.appendChild(form);
+             form.submit(); 
+             
+             return; 
           }
 
           if (isLiffReady && liff.isInClient()) {
@@ -686,7 +789,7 @@
           </main>
 
           <div className="text-center text-[10px] text-gray-400 pb-2">
-            系統狀態: {liffStatus} | V1.13.0
+            系統狀態: {liffStatus} | V1.16.0
           </div>
 
           {cart.length > 0 && !showCart && (
@@ -781,14 +884,80 @@
                           <div className="space-y-3">
                             <input type="text" placeholder="收件人姓名 (必填)" value={userProfile.name || ''} onChange={e => setUserProfile({...userProfile, name: e.target.value})} className="w-full p-3 border border-gray-300 rounded-xl outline-none focus:ring-2 focus:ring-orange-300" />
                             <input type="tel" placeholder="聯絡電話 (必填)" value={userProfile.phone || ''} onChange={e => setUserProfile({...userProfile, phone: e.target.value})} className="w-full p-3 border border-gray-300 rounded-xl outline-none focus:ring-2 focus:ring-orange-300" />
-                            <textarea placeholder="配送地址或門市資訊 (必填)" value={userProfile.address || ''} onChange={e => setUserProfile({...userProfile, address: e.target.value})} className="w-full p-3 border border-gray-300 rounded-xl outline-none focus:ring-2 focus:ring-orange-300 resize-none h-20" />
                             
                             <div className="p-3 bg-gray-50 border border-gray-200 rounded-xl space-y-3 mt-2">
+                              
                               <div>
                                 <label className="block text-xs text-gray-500 mb-1">付款方式</label>
-                                <input type="text" value="貨到付款" disabled className="w-full p-3 bg-gray-100 border border-gray-200 rounded-xl text-gray-500 cursor-not-allowed font-medium" />
+                                <select 
+                                  value={userProfile.paymentMethod || '信用卡 (綠界)'} 
+                                  onChange={e => setUserProfile({...userProfile, paymentMethod: e.target.value})} 
+                                  className="w-full p-3 border border-gray-300 rounded-xl outline-none focus:ring-2 focus:ring-orange-300 bg-white font-medium"
+                                >
+                                  <option value="信用卡 (綠界)">信用卡線上刷卡</option>
+                                  <option value="ATM虛擬帳號 (綠界)">ATM 虛擬帳號轉帳</option>
+                                  <option value="超商代碼 (綠界)">超商代碼繳費</option>
+                                  <option value="貨到付款">貨到付款</option>
+                                </select>
                               </div>
+
+                              <div>
+                                <label className="block text-xs text-gray-500 mb-1">配送方式</label>
+                                <select 
+                                  value={userProfile.shippingMethod || '宅配'} 
+                                  onChange={e => setUserProfile({
+                                      ...userProfile, 
+                                      shippingMethod: e.target.value,
+                                      address: e.target.value === '超商取貨 (綠界)' ? '' : userProfile.address,
+                                      cvsStoreName: ''
+                                  })} 
+                                  className="w-full p-3 border border-gray-300 rounded-xl outline-none focus:ring-2 focus:ring-orange-300 bg-white font-medium"
+                                >
+                                  <option value="宅配">宅配到府</option>
+                                  <option value="超商取貨 (綠界)">超商門市取貨</option>
+                                </select>
+                              </div>
+
+                              {/* 【V1.16.0 更新】超商地圖按鈕與體系選擇 */}
+                              {userProfile.shippingMethod === '超商取貨 (綠界)' && (
+                                <div className="mt-3 animate-scale-in p-3 bg-orange-50 border border-orange-200 rounded-xl">
+                                  <label className="block text-xs text-orange-800 mb-2 font-bold"><i className="fas fa-store"></i> 選擇超商門市</label>
+                                  
+                                  <select 
+                                    value={userProfile.cvsSubType || 'UNIMART'} 
+                                    onChange={e => setUserProfile({...userProfile, cvsSubType: e.target.value})} 
+                                    className="w-full p-2 mb-3 bg-white border border-orange-300 text-orange-800 rounded-lg text-sm outline-none font-bold"
+                                  >
+                                    <option value="UNIMART">7-11 統一超商</option>
+                                    <option value="FAMI">全家便利商店</option>
+                                    <option value="HILIFE">萊爾富</option>
+                                  </select>
+
+                                  <button 
+                                    type="button" 
+                                    onClick={openCvsMap} 
+                                    className="w-full py-2.5 bg-orange-500 text-white rounded-lg hover:bg-orange-600 shadow-md transition-colors text-sm font-bold flex items-center justify-center gap-2"
+                                  >
+                                      <i className="fas fa-map-marker-alt"></i> 開啟超商電子地圖
+                                  </button>
+                                  <input 
+                                    type="text" 
+                                    placeholder="門市名稱將自動帶入於此" 
+                                    value={userProfile.cvsStoreName || ''} 
+                                    disabled 
+                                    className="w-full mt-3 p-2 bg-white/50 border border-orange-200 rounded-lg text-orange-800 text-sm cursor-not-allowed text-center font-medium" 
+                                  />
+                                </div>
+                              )}
                               
+                              <textarea 
+                                placeholder={userProfile.shippingMethod === '超商取貨 (綠界)' ? "已選擇超商取貨，將自動帶入門市地址" : "配送地址 (必填)"} 
+                                value={userProfile.address || ''} 
+                                onChange={e => setUserProfile({...userProfile, address: e.target.value})} 
+                                disabled={userProfile.shippingMethod === '超商取貨 (綠界)'}
+                                className={`w-full p-3 border border-gray-300 rounded-xl outline-none focus:ring-2 focus:ring-orange-300 resize-none h-16 ${userProfile.shippingMethod === '超商取貨 (綠界)' ? 'bg-gray-100 cursor-not-allowed text-gray-400' : 'bg-white'}`} 
+                              />
+
                               <div>
                                 <label className="block text-xs text-gray-500 mb-1">發票類型</label>
                                 <select value={userProfile.invoiceType || ''} onChange={e => setUserProfile({...userProfile, invoiceType: e.target.value, taxId: '', cloudInvoiceType: '', mobileBarcode: ''})} className="w-full p-3 border border-gray-300 rounded-xl outline-none focus:ring-2 focus:ring-orange-300 bg-white">
@@ -858,7 +1027,7 @@
                           返回修改
                         </button>
                         <button onClick={submitOrder} className="w-2/3 py-4 rounded-xl font-bold text-lg transition-colors flex justify-center items-center gap-2 bg-orange-500 hover:bg-orange-600 text-white shadow-lg shadow-orange-200">
-                          確認傳送訂單
+                          {userProfile.paymentMethod !== '貨到付款' ? '確認並前往付款' : '確認傳送訂單'}
                         </button>
                       </div>
                     )
