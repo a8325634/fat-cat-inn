@@ -32,14 +32,15 @@
     /* ==============================================================================
      * 【版本公告與更新日誌】
      * ==============================================================================
-     * 版本: V1.21.0 (終極突破框架穩定版)
+     * 版本: V1.22.0 (實體按鈕突破版)
      * 日期: 2026-03-28
      * * 【歷史更新簡要】
-     * - V1.15.0: 綠界金流正式串接。
      * - V1.16.0: 實作綠界超商電子地圖串接與 localStorage 暫存機制。
      * - V1.17.0: 相容 GAS iframe 環境讀取門市參數。
-     * * 【V1.21.0 更新內容 (本次更新)】
-     * 1. 【前端強化】在所有 form submit 加入 target="_top"，確保在 GAS 測試環境或任何 iframe 中都能強制突破框架，完美導向綠界並成功返回 LIFF。
+     * - V1.21.0: 嘗試全面加入 target="_top" 突破框架。
+     * * 【V1.22.0 更新內容 (本次更新)】
+     * 1. 【核心修復】解決因非同步處理(await)導致瀏覽器阻擋 target="_top"，造成綠界金流在 iframe 內載入被拒絕(綠界頁面無法使用)的問題。
+     * 2. 【流程優化】結帳流程改為「建立訂單 -> 顯示實體付款按鈕」，藉由使用者的「真實點擊」強制取得跳轉權限，完美突破 iframe 限制。
      * ============================================================================== */
     const { useState, useEffect, useMemo } = React;
 
@@ -117,6 +118,9 @@
       const [checkoutStep, setCheckoutStep] = useState(false);
       const [showHistory, setShowHistory] = useState(false);
       const [toastMessage, setToastMessage] = useState('');
+      
+      // ✅ V1.22.0 新增：儲存待跳轉綠界的付款資訊，用以顯示「實體跳轉按鈕」
+      const [pendingPaymentData, setPendingPaymentData] = useState(null);
 
       // 【攔截超商地圖回傳的參數，並相容 GAS iframe 環境】
       useEffect(() => {
@@ -140,7 +144,6 @@
           localStorage.removeItem('fatcat_temp_profile');
         };
 
-        // 1. 標準網頁環境讀取法
         const urlParams = new URLSearchParams(window.location.search);
         const storeName = urlParams.get('storeName');
         const storeAddress = urlParams.get('storeAddress');
@@ -149,7 +152,6 @@
           handleRestore(storeName, storeAddress);
           window.history.replaceState({}, document.title, window.location.pathname);
         } else {
-          // 2. GAS 環境讀取法 (解決被 iframe 擋住參數的問題)
           if (typeof google !== 'undefined' && google.script && google.script.url) {
             google.script.url.getLocation(function(location) {
               if (location.parameter && location.parameter.storeName) {
@@ -404,7 +406,6 @@
         });
       };
 
-      // 【V1.21.0 更新】發送請求開啟綠界超商地圖 (加入 target="_top")
       const openCvsMap = () => {
         if (!ECPAY_BACKEND_URL) {
           showToast('請先填入綠界後端 API 網址！');
@@ -417,10 +418,9 @@
         const form = document.createElement('form');
         form.method = 'POST';
         form.action = 'https://logistics-stage.ecpay.com.tw/Express/map';
-        form.target = '_top'; // 🔥 終極突破指令：強制跳出 iframe，直接在最外層視窗開啟地圖
+        form.target = '_top'; 
 
         let returnUrl = window.location.href.split('?')[0];
-        // 確保接駁網址是 LIFF，這樣使用者回傳後才會留在 LINE
         if (LIFF_ID && LIFF_ID !== '請在此填入你的_LIFF_ID') {
           returnUrl = `https://liff.line.me/${LIFF_ID}`;
         }
@@ -598,6 +598,20 @@
 
           const isECPayRequired = userProfile.paymentMethod !== '貨到付款' && ECPAY_BACKEND_URL;
 
+          // ✅ V1.22.0 關鍵修復：攔截自動跳轉，改為儲存付款資料並顯示「實體付款按鈕」
+          if (isECPayRequired) {
+             setPendingPaymentData({
+                orderId: platformOrderId,
+                amount: cartTotal,
+                items: cart.map(i => `${i.name} x${i.quantity}`).join('#'), 
+                paymentMethod: userProfile.paymentMethod,
+                buyerName: userProfile.name,
+                buyerPhone: userProfile.phone
+             });
+             setCart([]); // 清空購物車，讓畫面乾淨
+             return; 
+          }
+
           if (!isECPayRequired) {
             setCart([]);
             setShowCart(false);
@@ -615,33 +629,6 @@
             } catch (error) {
               console.error("GAS 執行錯誤:", error);
             }
-          }
-
-          if (isECPayRequired) {
-             showToast("正在為您導向綠界安全付款頁面...");
-             
-             const form = document.createElement('form');
-             form.method = 'POST';
-             form.action = ECPAY_BACKEND_URL;
-             form.target = '_top'; // 🔥 終極突破指令：結帳跳轉也強制跳出 iframe
-             
-             const dataInput = document.createElement('input');
-             dataInput.type = 'hidden';
-             dataInput.name = 'orderData';
-             dataInput.value = JSON.stringify({
-                orderId: platformOrderId,
-                amount: cartTotal,
-                items: cart.map(i => `${i.name} x${i.quantity}`).join('#'), 
-                paymentMethod: userProfile.paymentMethod,
-                buyerName: userProfile.name,
-                buyerPhone: userProfile.phone
-             });
-             
-             form.appendChild(dataInput);
-             document.body.appendChild(form);
-             form.submit(); 
-             
-             return; 
           }
 
           if (isLiffReady && liff.isInClient()) {
@@ -806,7 +793,7 @@
           </main>
 
           <div className="text-center text-[10px] text-gray-400 pb-2">
-            系統狀態: {liffStatus} | V1.21.0
+            系統狀態: {liffStatus} | V1.22.0
           </div>
 
           {cart.length > 0 && !showCart && (
@@ -840,13 +827,39 @@
               <div className="bg-white w-full max-w-lg md:rounded-3xl rounded-t-3xl h-[85vh] md:h-auto max-h-[90vh] flex flex-col overflow-hidden shadow-2xl animate-slide-up md:animate-scale-in">
                 <div className="p-4 border-b border-gray-100 flex justify-between items-center bg-gray-50">
                   <h2 className="text-xl font-bold flex items-center gap-2">
-                    {checkoutStep ? <><i className="fas fa-file-invoice"></i> 填寫收件資訊</> : <><i className="fas fa-shopping-cart"></i> 購物車</>}
+                    {pendingPaymentData ? <><i className="fas fa-shield-alt"></i> 準備付款</> : checkoutStep ? <><i className="fas fa-file-invoice"></i> 填寫收件資訊</> : <><i className="fas fa-shopping-cart"></i> 購物車</>}
                   </h2>
-                  <button onClick={() => { setShowCart(false); setTimeout(() => setCheckoutStep(false), 300); }} className="p-2 bg-gray-200 rounded-full hover:bg-gray-300 transition-colors w-8 h-8 flex items-center justify-center"><i className="fas fa-times"></i></button>
+                  <button onClick={() => { 
+                    setShowCart(false); 
+                    setTimeout(() => { 
+                      setCheckoutStep(false); 
+                      setPendingPaymentData(null); 
+                    }, 300); 
+                  }} className="p-2 bg-gray-200 rounded-full hover:bg-gray-300 transition-colors w-8 h-8 flex items-center justify-center"><i className="fas fa-times"></i></button>
                 </div>
                 
                 <div className="flex-1 overflow-y-auto p-4 hide-scrollbar">
-                  {cart.length === 0 ? (
+                  {/* ✅ V1.22.0 新增：訂單送出後的實體付款按鈕畫面 */}
+                  {pendingPaymentData ? (
+                    <div className="py-10 text-center animate-scale-in flex flex-col items-center">
+                      <div className="w-20 h-20 bg-green-100 text-green-500 rounded-full flex items-center justify-center mb-6 shadow-sm">
+                        <i className="fas fa-check text-4xl"></i>
+                      </div>
+                      <h3 className="text-2xl font-black text-gray-800 mb-3">訂單已成功建立！</h3>
+                      <p className="text-sm text-gray-500 mb-8 leading-relaxed">
+                        系統已為您保留商品。<br/>
+                        為了保護您的交易安全，請點擊下方按鈕<br/>前往<span className="font-bold text-gray-700">「綠界科技 ECPay」</span>完成結帳流程。
+                      </p>
+                      
+                      <form method="POST" action={ECPAY_BACKEND_URL} target="_top" className="w-full">
+                        <input type="hidden" name="orderData" value={JSON.stringify(pendingPaymentData)} />
+                        <button type="submit" className="w-full py-4 bg-green-500 hover:bg-green-600 text-white rounded-xl font-black text-lg shadow-lg shadow-green-200 transition-transform active:scale-95 flex items-center justify-center gap-2">
+                          <i className="fas fa-lock"></i> 確認前往安全付款
+                        </button>
+                      </form>
+                      <p className="text-[10px] text-gray-400 mt-4">(若不小心關閉此視窗，可至歷史訂單查看，但無法重新付款)</p>
+                    </div>
+                  ) : cart.length === 0 ? (
                     <div className="text-center py-10 text-gray-400">購物車空空的耶</div>
                   ) : (
                     <div className="space-y-4">
@@ -1014,43 +1027,46 @@
                   )}
                 </div>
 
-                <div className="p-4 bg-white border-t border-gray-100 shadow-[0_-10px_15px_-3px_rgba(0,0,0,0.05)]">
-                  <div className="flex justify-between items-end mb-4">
-                    <div className="flex flex-col">
-                      <span className="text-gray-500 font-medium text-sm mb-1">共 {cartTotalQuantity} 件商品</span>
-                      <div className="text-xs font-bold">
-                        {cartSubtotal >= FREE_SHIPPING_THRESHOLD ? (
-                          <span className="text-green-600 bg-green-50 px-2 py-0.5 rounded">🎉 已達免運門檻</span>
-                        ) : (
-                          <span className="text-red-500 bg-red-50 px-2 py-0.5 rounded">🚚 需運費 ${SHIPPING_FEE} (差 ${FREE_SHIPPING_THRESHOLD - cartSubtotal} 免運)</span>
-                        )}
+                {/* ✅ V1.22.0 新增：當顯示綠界付款按鈕時，隱藏下方原有的結帳 footer */}
+                {!pendingPaymentData && (
+                  <div className="p-4 bg-white border-t border-gray-100 shadow-[0_-10px_15px_-3px_rgba(0,0,0,0.05)]">
+                    <div className="flex justify-between items-end mb-4">
+                      <div className="flex flex-col">
+                        <span className="text-gray-500 font-medium text-sm mb-1">共 {cartTotalQuantity} 件商品</span>
+                        <div className="text-xs font-bold">
+                          {cartSubtotal >= FREE_SHIPPING_THRESHOLD ? (
+                            <span className="text-green-600 bg-green-50 px-2 py-0.5 rounded">🎉 已達免運門檻</span>
+                          ) : (
+                            <span className="text-red-500 bg-red-50 px-2 py-0.5 rounded">🚚 需運費 ${SHIPPING_FEE} (差 ${FREE_SHIPPING_THRESHOLD - cartSubtotal} 免運)</span>
+                          )}
+                        </div>
+                      </div>
+                      <div className="text-right">
+                        <div className="text-gray-400 text-xs mb-1">小計 ${cartSubtotal} {shippingFee > 0 && `+ 運費 $${shippingFee}`}</div>
+                        <span className="text-gray-500 text-sm mr-2">總計</span>
+                        <span className="text-3xl font-black text-orange-600">${cartTotal}</span>
                       </div>
                     </div>
-                    <div className="text-right">
-                      <div className="text-gray-400 text-xs mb-1">小計 ${cartSubtotal} {shippingFee > 0 && `+ 運費 $${shippingFee}`}</div>
-                      <span className="text-gray-500 text-sm mr-2">總計</span>
-                      <span className="text-3xl font-black text-orange-600">${cartTotal}</span>
-                    </div>
-                  </div>
-                  {ENABLE_ORDER_SUBMIT ? (
-                    !checkoutStep ? (
-                      <button onClick={() => setCheckoutStep(true)} disabled={cart.length === 0} className={`w-full py-4 rounded-xl font-bold text-lg transition-colors flex justify-center items-center gap-2 ${cart.length === 0 ? 'bg-gray-200 text-gray-400 cursor-not-allowed' : 'bg-orange-500 hover:bg-orange-600 text-white shadow-lg shadow-orange-200'}`}>
-                        下一步：填寫收件資訊
-                      </button>
+                    {ENABLE_ORDER_SUBMIT ? (
+                      !checkoutStep ? (
+                        <button onClick={() => setCheckoutStep(true)} disabled={cart.length === 0} className={`w-full py-4 rounded-xl font-bold text-lg transition-colors flex justify-center items-center gap-2 ${cart.length === 0 ? 'bg-gray-200 text-gray-400 cursor-not-allowed' : 'bg-orange-500 hover:bg-orange-600 text-white shadow-lg shadow-orange-200'}`}>
+                          下一步：填寫收件資訊
+                        </button>
+                      ) : (
+                        <div className="flex gap-3">
+                          <button onClick={() => setCheckoutStep(false)} className="w-1/3 py-4 rounded-xl font-bold text-gray-600 bg-gray-100 hover:bg-gray-200 transition-colors">
+                            返回修改
+                          </button>
+                          <button onClick={submitOrder} className="w-2/3 py-4 rounded-xl font-bold text-lg transition-colors flex justify-center items-center gap-2 bg-orange-500 hover:bg-orange-600 text-white shadow-lg shadow-orange-200">
+                            {userProfile.paymentMethod !== '貨到付款' ? '確認並前往付款' : '確認傳送訂單'}
+                          </button>
+                        </div>
+                      )
                     ) : (
-                      <div className="flex gap-3">
-                        <button onClick={() => setCheckoutStep(false)} className="w-1/3 py-4 rounded-xl font-bold text-gray-600 bg-gray-100 hover:bg-gray-200 transition-colors">
-                          返回修改
-                        </button>
-                        <button onClick={submitOrder} className="w-2/3 py-4 rounded-xl font-bold text-lg transition-colors flex justify-center items-center gap-2 bg-orange-500 hover:bg-orange-600 text-white shadow-lg shadow-orange-200">
-                          {userProfile.paymentMethod !== '貨到付款' ? '確認並前往付款' : '確認傳送訂單'}
-                        </button>
-                      </div>
-                    )
-                  ) : (
-                    <div className="w-full py-4 bg-gray-100 text-gray-500 rounded-xl text-center text-sm font-medium">目前為展示模式，暫未開放下單功能</div>
-                  )}
-                </div>
+                      <div className="w-full py-4 bg-gray-100 text-gray-500 rounded-xl text-center text-sm font-medium">目前為展示模式，暫未開放下單功能</div>
+                    )}
+                  </div>
+                )}
               </div>
             </div>
           )}
