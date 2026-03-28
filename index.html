@@ -32,14 +32,14 @@
     /* ==============================================================================
      * 【版本公告與更新日誌】
      * ==============================================================================
-     * 版本: V1.17.0 (超商地圖跳轉完美修復版)
+     * 版本: V1.21.0 (終極突破框架穩定版)
      * 日期: 2026-03-28
      * * 【歷史更新簡要】
-     * - V1.0-V1.15.0: 基礎建設、Firebase、LIFF、防呆辨識、綠界金流串接。
+     * - V1.15.0: 綠界金流正式串接。
      * - V1.16.0: 實作綠界超商電子地圖串接與 localStorage 暫存機制。
-     * * 【V1.17.0 更新內容 (本次更新)】
-     * 1. 修復超商地圖返回後變成外部網頁的問題（強制鎖定 LIFF 網址為接駁點）。
-     * 2. 修復在 GAS 部署環境下，因為 iframe 導致無法讀取門市參數，造成購物車被清空的問題。
+     * - V1.17.0: 相容 GAS iframe 環境讀取門市參數。
+     * * 【V1.21.0 更新內容 (本次更新)】
+     * 1. 【前端強化】在所有 form submit 加入 target="_top"，確保在 GAS 測試環境或任何 iframe 中都能強制突破框架，完美導向綠界並成功返回 LIFF。
      * ============================================================================== */
     const { useState, useEffect, useMemo } = React;
 
@@ -47,7 +47,7 @@
     // ⚠️ 【專屬資料設定區】 ⚠️
     // ============================================================================
     
-    // 1. LIFF ID
+    // 1. LIFF ID (確保填寫正確，這樣回傳時才會自動打開 LINE)
     const LIFF_ID = '2009604254-bT0llaE8'; 
 
     // 2. 官方帳號 ID (備用跳轉使用)
@@ -118,7 +118,7 @@
       const [showHistory, setShowHistory] = useState(false);
       const [toastMessage, setToastMessage] = useState('');
 
-      // 【V1.17.0 更新】攔截超商地圖回傳的參數，並相容 GAS iframe 環境
+      // 【攔截超商地圖回傳的參數，並相容 GAS iframe 環境】
       useEffect(() => {
         const handleRestore = (storeName, storeAddress) => {
           const savedCart = localStorage.getItem('fatcat_temp_cart');
@@ -404,7 +404,7 @@
         });
       };
 
-      // 【V1.17.0 更新】強制設定 LIFF 為跳轉回傳點，確保回到 LINE 內
+      // 【V1.21.0 更新】發送請求開啟綠界超商地圖 (加入 target="_top")
       const openCvsMap = () => {
         if (!ECPAY_BACKEND_URL) {
           showToast('請先填入綠界後端 API 網址！');
@@ -417,6 +417,7 @@
         const form = document.createElement('form');
         form.method = 'POST';
         form.action = 'https://logistics-stage.ecpay.com.tw/Express/map';
+        form.target = '_top'; // 🔥 終極突破指令：強制跳出 iframe，直接在最外層視窗開啟地圖
 
         let returnUrl = window.location.href.split('?')[0];
         // 確保接駁網址是 LIFF，這樣使用者回傳後才會留在 LINE
@@ -622,6 +623,7 @@
              const form = document.createElement('form');
              form.method = 'POST';
              form.action = ECPAY_BACKEND_URL;
+             form.target = '_top'; // 🔥 終極突破指令：結帳跳轉也強制跳出 iframe
              
              const dataInput = document.createElement('input');
              dataInput.type = 'hidden';
@@ -804,7 +806,7 @@
           </main>
 
           <div className="text-center text-[10px] text-gray-400 pb-2">
-            系統狀態: {liffStatus} | V1.17.0
+            系統狀態: {liffStatus} | V1.21.0
           </div>
 
           {cart.length > 0 && !showCart && (
@@ -933,7 +935,6 @@
                                 </select>
                               </div>
 
-                              {/* 【V1.17.0 更新】超商地圖按鈕 */}
                               {userProfile.shippingMethod === '超商取貨 (綠界)' && (
                                 <div className="mt-3 animate-scale-in p-3 bg-orange-50 border border-orange-200 rounded-xl">
                                   <label className="block text-xs text-orange-800 mb-2 font-bold"><i className="fas fa-store"></i> 選擇超商門市</label>
