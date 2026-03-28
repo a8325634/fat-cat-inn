@@ -32,15 +32,15 @@
     /* ==============================================================================
      * 【版本公告與更新日誌】
      * ==============================================================================
-     * 版本: V1.27.0 (防誤出貨與通知邏輯修正版)
+     * 版本: V1.28.0 (超商狀態保存與付款成功回傳版)
      * 日期: 2026-03-28
      * * 【歷史更新簡要】
-     * - V1.24.0: 導入 API 驗證模式，兼顧資安不洩漏金鑰。
-     * - V1.25.0: 修正綠界訂單編號底線錯誤 (10200031)。
+     * - V1.25.0: 修正綠界訂單編號底線錯誤。
      * - V1.26.0: 歷史訂單新增狀態顯示與「重新付款」按鈕，並重置結帳選項防止選錯。
-     * * 【V1.27.0 更新內容 (本次更新)】
-     * 1. 【防誤出貨機制】修正通知發送邏輯。為避免綠界線上付款失敗時，人工客服誤以為已付款而出貨，現在只要是「綠界線上付款」，系統都不會提前傳送訂單給 LINE 與 Google Sheets。
-     * 2. 【貨到付款不設限】維持「貨到付款」的順暢體驗，若為貨到付款，系統在下單當下仍會立刻傳送訂單資料至客服端。
+     * - V1.27.0: 加入防誤出貨機制，綠界付款前不傳送 LINE 通知。
+     * * 【V1.28.0 更新內容 (本次更新)】
+     * 1. 【狀態保存修復】修復從超商電子地圖跳轉回來時，因載入顧客預設資料導致「付款方式」及「配送方式」被異常清空的問題。
+     * 2. 【付款成功通知】新增綠界付款完成跳轉偵測。客人付款完返回商店時，系統會自動將 Firebase 訂單更新為「已付款」，並觸發 LINE 成功訊息傳送給人工客服。
      * ============================================================================== */
     const { useState, useEffect, useMemo } = React;
 
@@ -60,7 +60,7 @@
     // 4. Google Apps Script (GAS) 接收網址 (紀錄莫筆克訂單用)
     const GAS_WEBHOOK_URL = 'https://script.google.com/macros/s/AKfycbxfqxSpfxVgACpeKtWzxm7sTLUwlnUeWwPENNp94VhtuAIUIWoewJs9caQ5UC4l2MtGHw/exec'; 
 
-    // 5. 綠界金流後端 API 網址 (🔥請填入你剛剛部署 ecpay_backend.gs 產生的網址🔥)
+    // 5. 綠界金流後端 API 網址 
     const ECPAY_BACKEND_URL = 'https://script.google.com/macros/s/AKfycbwhB1OL9ih-sXV4gIsyZjPFli8s0E8IHMlRz6txch3Nm2s2VuwVoUp9uUfs6CoA2lyh/exec';
 
     const ENABLE_ORDER_SUBMIT = true; 
@@ -149,7 +149,6 @@
 
         if (storeName) {
           handleRestore(storeName, storeAddress);
-          window.history.replaceState({}, document.title, window.location.pathname);
         } else {
           if (typeof google !== 'undefined' && google.script && google.script.url) {
             google.script.url.getLocation(function(location) {
@@ -269,6 +268,11 @@
 
         const fetchProfile = async () => {
           try {
+            // ✅ V1.28.0 狀態保存修復：如果網址有 storeName，代表是從超商地圖回傳
+            // 系統必須「中止」載入空白預設值，保留客人剛剛選好的付款方式與配送方式！
+            const urlParams = new URLSearchParams(window.location.search);
+            if (urlParams.get('storeName')) return; 
+
             const profileRef = doc(db, 'artifacts', appId, 'users', user.uid, 'profiles', 'default');
             const docSnap = await getDoc(profileRef);
             if (docSnap.exists()) {
@@ -299,6 +303,67 @@
 
         return () => unsubscribeOrders();
       }, [user]);
+
+      // ✅ V1.28.0 付款成功通知：偵測從綠界「付款完成返回商店」跳轉回來的訂單
+      useEffect(() => {
+        if (!isLiffReady || orders.length === 0 || !user || !db) return;
+
+        const urlParams = new URLSearchParams(window.location.search);
+        const paidOrderId = urlParams.get('paidOrderId');
+        if (!paidOrderId) return;
+
+        // 避免重新整理時重複執行
+        if (sessionStorage.getItem(`processed_${paidOrderId}`)) return;
+
+        const targetOrder = orders.find(o => o.platformOrderId === paidOrderId);
+        if (targetOrder && targetOrder.status === '未付款') {
+          sessionStorage.setItem(`processed_${paidOrderId}`, 'true');
+          
+          // 1. 更新 Firebase 訂單狀態為「已付款」
+          const orderDocRef = doc(db, 'artifacts', appId, 'users', user.uid, 'orders', targetOrder.id);
+          updateDoc(orderDocRef, { status: '已付款' }).catch(e => console.error(e));
+
+          // 2. 組合並發送 LINE 成功付款訊息給客服
+          let lineMessageText = `【肥貓客棧 - 🟢綠界線上付款成功】\n`;
+          lineMessageText += `訂單編號：${targetOrder.platformOrderId}\n`;
+          lineMessageText += `訂購人：${targetOrder.recipient.name}\n`;
+          lineMessageText += `電話：${targetOrder.recipient.phone}\n`;
+          lineMessageText += `配送方式：${targetOrder.recipient.shippingMethod}\n`;
+          if (targetOrder.recipient.shippingMethod === '超商取貨 (綠界)') {
+             lineMessageText += `門市：${targetOrder.recipient.cvsStoreName} (${targetOrder.recipient.address})\n`;
+          } else {
+             lineMessageText += `地址：${targetOrder.recipient.address}\n`;
+          }
+          lineMessageText += `付款方式：${targetOrder.recipient.paymentMethod}\n`;
+          lineMessageText += `------------------\n`;
+          targetOrder.items.forEach((item, idx) => {
+            lineMessageText += `${idx+1}. ${item.name} (${item.variant.name}) x${item.quantity}\n`;
+          });
+          lineMessageText += `------------------\n`;
+          lineMessageText += `總計金額：$${targetOrder.totalAmount}\n`;
+          lineMessageText += `✅ 系統已收到您的款項，將盡快為您安排出貨！`;
+
+          if (liff.isInClient()) {
+            liff.sendMessages([{ type: 'text', text: lineMessageText }])
+              .then(() => {
+                showToast("✅ 付款成功！LINE 通知已發送給客服。");
+              })
+              .catch(err => {
+                console.error("LIFF 傳送失敗:", err);
+                showToast("✅ 付款成功！(自動傳送失敗，請手動聯絡客服)");
+              });
+          } else {
+            showToast("✅ 付款成功！訂單已確認。");
+          }
+          
+          // 清理網址參數，保持網址乾淨
+          const newUrl = window.location.pathname + (window.location.search.replace(/paidOrderId=[^&]+&?/, '').replace(/\?$/, ''));
+          window.history.replaceState({}, document.title, newUrl || '/');
+          
+          // 顯示歷史訂單畫面讓客人確認
+          setShowHistory(true);
+        }
+      }, [orders, isLiffReady, user, db]);
 
       const parsePromotion = (promoText, originalPrice) => {
         if (!promoText) return { text: '', discountAmount: 0, gift: '', finalPrice: originalPrice };
@@ -616,9 +681,6 @@
             });
           }
 
-          // ✅ V1.27.0: 修正通知發送邏輯
-          // 只有當「非綠界付款」(亦即：貨到付款) 時，才在前端當下直接傳送資料。
-          // 若為綠界付款，則保留至客人付款成功後由後端處理，防堵未付款前通知客服出貨的漏洞。
           if (!isECPayRequired) {
             
             // 1. 寫入 Google Sheets
@@ -666,6 +728,13 @@
              let returnUrl = window.location.href.split('?')[0];
              if (LIFF_ID && LIFF_ID !== '請在此填入你的_LIFF_ID') {
                returnUrl = `https://liff.line.me/${LIFF_ID}`;
+             }
+
+             // ✅ V1.28.0: 將訂單編號加上跳轉網址，以便客人付款完成返回時能被我們抓到！
+             if (returnUrl.includes('?')) {
+               returnUrl += `&paidOrderId=${platformOrderId}`;
+             } else {
+               returnUrl += `?paidOrderId=${platformOrderId}`;
              }
 
              const itemsString = encodeURIComponent(cart.map(i => `${i.name} x${i.quantity}`).join('#'));
@@ -831,7 +900,7 @@
           </main>
 
           <div className="text-center text-[10px] text-gray-400 pb-2">
-            系統狀態: {liffStatus} | V1.27.0
+            系統狀態: {liffStatus} | V1.28.0
           </div>
 
           {cart.length > 0 && !showCart && (
@@ -1130,13 +1199,11 @@
                             <span className="text-xs text-gray-400">
                               {order.createdAt?.toMillis ? new Date(order.createdAt.toMillis()).toLocaleString('zh-TW') : '剛剛'}
                             </span>
-                            {/* V1.26.0 狀態顯示優化 */}
-                            <span className={`text-xs px-2 py-1 rounded font-bold ${order.status === '未付款' ? 'bg-red-50 text-red-600' : 'bg-green-50 text-green-600'}`}>
+                            <span className={`text-xs px-2 py-1 rounded font-bold ${order.status === '未付款' ? 'bg-red-50 text-red-600' : (order.status === '已付款' ? 'bg-green-100 text-green-700' : 'bg-blue-50 text-blue-600')}`}>
                               {order.status}
                             </span>
                           </div>
                           
-                          {/* V1.26.0 新增訂單編號 */}
                           <div className="text-sm font-bold text-gray-700 mb-3 border-b border-dashed border-gray-200 pb-2">
                             訂單編號：<span className="text-gray-500 font-normal">{order.platformOrderId}</span>
                           </div>
@@ -1173,7 +1240,6 @@
                             <span className="text-orange-600">${order.totalAmount}</span>
                           </div>
 
-                          {/* V1.26.0 重新付款按鈕邏輯 */}
                           {order.status === '未付款' && (
                             <div className="mt-4 pt-4 border-t border-gray-100">
                               <p className="text-xs text-red-500 mb-2 font-medium">付款尚未完成，請重新下單或點擊下方按鈕重新付款：</p>
