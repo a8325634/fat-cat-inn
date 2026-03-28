@@ -27,20 +27,20 @@
   <script type="text/babel" data-type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
     import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-    import { getFirestore, collection, doc, setDoc, getDoc, onSnapshot, addDoc, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+    import { getFirestore, collection, doc, setDoc, getDoc, onSnapshot, addDoc, updateDoc, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
     /* ==============================================================================
      * 【版本公告與更新日誌】
      * ==============================================================================
-     * 版本: V1.25.0 (綠界訂單編號格式修正版)
+     * 版本: V1.27.0 (防誤出貨與通知邏輯修正版)
      * 日期: 2026-03-28
      * * 【歷史更新簡要】
-     * - V1.22.0: 新增實體付款按鈕，嘗試藉由真實點擊突破 iframe。
-     * - V1.23.0: 移除後端 HTML，改為前端直連綠界，但存在金鑰外洩資安風險。
-     * - V1.24.0: 導入 API 驗證模式，由 GAS 負責計算 CheckMacValue，前端直連綠界跳轉，兼顧資安與跳轉成功率。
-     * * 【V1.25.0 更新內容 (本次更新)】
-     * 1. 【核心修復】解決綠界金流交易失敗 (錯誤代碼：10200031) 的問題。
-     * 2. 【格式修正】移除了訂單編號 (platformOrderId) 產生邏輯中的底線 ("_")，確保編號僅包含英文字母與數字，完全符合綠界 MerchantTradeNo 的嚴格格式規範。
+     * - V1.24.0: 導入 API 驗證模式，兼顧資安不洩漏金鑰。
+     * - V1.25.0: 修正綠界訂單編號底線錯誤 (10200031)。
+     * - V1.26.0: 歷史訂單新增狀態顯示與「重新付款」按鈕，並重置結帳選項防止選錯。
+     * * 【V1.27.0 更新內容 (本次更新)】
+     * 1. 【防誤出貨機制】修正通知發送邏輯。為避免綠界線上付款失敗時，人工客服誤以為已付款而出貨，現在只要是「綠界線上付款」，系統都不會提前傳送訂單給 LINE 與 Google Sheets。
+     * 2. 【貨到付款不設限】維持「貨到付款」的順暢體驗，若為貨到付款，系統在下單當下仍會立刻傳送訂單資料至客服端。
      * ============================================================================== */
     const { useState, useEffect, useMemo } = React;
 
@@ -101,7 +101,7 @@
       const [user, setUser] = useState(null); 
       const [userProfile, setUserProfile] = useState({ 
         name: '', phone: '', address: '', 
-        paymentMethod: '信用卡 (綠界)', shippingMethod: '宅配', cvsStoreName: '', cvsSubType: 'UNIMART',
+        paymentMethod: '', shippingMethod: '', cvsStoreName: '', cvsSubType: 'UNIMART',
         buyerNote: '', invoiceType: '', taxId: '', cloudInvoiceType: '', mobileBarcode: '' 
       });
       const [orders, setOrders] = useState([]);
@@ -119,7 +119,6 @@
       const [showHistory, setShowHistory] = useState(false);
       const [toastMessage, setToastMessage] = useState('');
       
-      // 儲存待跳轉綠界的付款資訊，用以顯示「實體跳轉按鈕」
       const [pendingPaymentData, setPendingPaymentData] = useState(null);
 
       // 【攔截超商地圖回傳的參數，並相容 GAS iframe 環境】
@@ -273,7 +272,12 @@
             const profileRef = doc(db, 'artifacts', appId, 'users', user.uid, 'profiles', 'default');
             const docSnap = await getDoc(profileRef);
             if (docSnap.exists()) {
-              setUserProfile(prev => ({ ...prev, ...docSnap.data() }));
+              const data = docSnap.data();
+              data.paymentMethod = '';
+              data.shippingMethod = '';
+              data.cvsStoreName = '';
+              data.cvsSubType = 'UNIMART';
+              setUserProfile(prev => ({ ...prev, ...data }));
             }
           } catch (error) {}
         };
@@ -457,6 +461,15 @@
       const submitOrder = async () => {
         if (cart.length === 0) return;
         
+        if (!userProfile.paymentMethod) {
+          showToast("請選擇付款方式！");
+          return;
+        }
+        if (!userProfile.shippingMethod) {
+          showToast("請選擇配送方式！");
+          return;
+        }
+
         if (userProfile.shippingMethod === '超商取貨 (綠界)' && !userProfile.address) {
           showToast("請選擇超商取貨門市！");
           return;
@@ -490,12 +503,17 @@
           const dateStr = `${yyyy}/${mm}/${dd}`;
           const orderIdSuffix = Math.floor(Math.random() * 10000).toString().padStart(4, '0');
           
-          // ✅ V1.25.0 關鍵修復：移除底線，確保完全符合綠界的格式要求 (僅限英文字母與數字)
           const platformOrderId = `FatCat${yyyy}${mm}${dd}${orderIdSuffix}`;
+
+          const isECPayRequired = userProfile.paymentMethod !== '貨到付款' && ECPAY_BACKEND_URL;
+          let newOrderDocRef = null;
 
           if (user && db) {
             const profileRef = doc(db, 'artifacts', appId, 'users', user.uid, 'profiles', 'default');
-            await setDoc(profileRef, userProfile);
+            const profileToSave = { ...userProfile };
+            profileToSave.paymentMethod = '';
+            profileToSave.shippingMethod = '';
+            await setDoc(profileRef, profileToSave);
 
             const newOrder = {
               items: cart,
@@ -504,12 +522,12 @@
               totalAmount: cartTotal,
               platformOrderId: platformOrderId,
               recipient: userProfile,
-              status: '處理中',
+              status: isECPayRequired ? '未付款' : '處理中',
               trackingNumber: '',
               createdAt: serverTimestamp()
             };
             const ordersRef = collection(db, 'artifacts', appId, 'users', user.uid, 'orders');
-            await addDoc(ordersRef, newOrder);
+            newOrderDocRef = await addDoc(ordersRef, newOrder);
           }
 
           let lineMessageText = `【肥貓客棧 - 新訂單】\n`;
@@ -598,10 +616,47 @@
             });
           }
 
-          const isECPayRequired = userProfile.paymentMethod !== '貨到付款' && ECPAY_BACKEND_URL;
+          // ✅ V1.27.0: 修正通知發送邏輯
+          // 只有當「非綠界付款」(亦即：貨到付款) 時，才在前端當下直接傳送資料。
+          // 若為綠界付款，則保留至客人付款成功後由後端處理，防堵未付款前通知客服出貨的漏洞。
+          if (!isECPayRequired) {
+            
+            // 1. 寫入 Google Sheets
+            if (GAS_WEBHOOK_URL) {
+              fetch(GAS_WEBHOOK_URL, {
+                method: 'POST',
+                mode: 'no-cors', 
+                headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+                body: JSON.stringify({ rows: gasRows })
+              }).catch(e => console.error("GAS 傳送錯誤", e));
+            }
 
-          if (isECPayRequired) {
-             showToast("正在建立安全連線...");
+            // 2. 傳送 LINE 訊息
+            if (isLiffReady && liff.isInClient()) {
+              try {
+                showToast("處理中，請稍候...");
+                await liff.sendMessages([{ type: 'text', text: lineMessageText }]);
+                showToast("✅ 訂單已自動傳送成功！");
+                setTimeout(() => { liff.closeWindow(); }, 1500);
+              } catch (liffError) {
+                console.error("LIFF 傳送失敗:", liffError);
+              }
+            } else {
+              showToast("⚠️ 未使用 LIFF 開啟，轉為手動發送...");
+              setTimeout(() => {
+                const encodedMessage = encodeURIComponent(lineMessageText);
+                window.location.href = `https://line.me/R/oaMessage/${LINE_OA_ID}/?${encodedMessage}`;
+              }, 1500);
+            }
+            
+            // 貨到付款結帳完成，清空購物車並關閉視窗
+            setCart([]);
+            setShowCart(false);
+            setTimeout(() => setCheckoutStep(false), 300);
+
+          } else {
+             // 處理綠界線上付款連線，僅提示使用者，不發送上述通知
+             showToast("訂單已建立，準備建立安全連線...");
              
              let choosePayment = 'ALL';
              if (userProfile.paymentMethod.includes('信用卡')) choosePayment = 'Credit';
@@ -613,7 +668,6 @@
                returnUrl = `https://liff.line.me/${LIFF_ID}`;
              }
 
-             // 組裝要傳給 GAS API 的參數 (使用 GET 請求避開複雜的 CORS 設定)
              const itemsString = encodeURIComponent(cart.map(i => `${i.name} x${i.quantity}`).join('#'));
              const apiUrl = `${ECPAY_BACKEND_URL}?action=getMacValue&orderId=${platformOrderId}&amount=${cartTotal}&items=${itemsString}&paymentMethod=${choosePayment}&returnUrl=${encodeURIComponent(returnUrl)}`;
 
@@ -621,60 +675,22 @@
                 const response = await fetch(apiUrl);
                 const ecpayParams = await response.json();
                 
-                if(ecpayParams.error) {
-                    throw new Error(ecpayParams.error);
+                if(ecpayParams.error) throw new Error(ecpayParams.error);
+
+                if (newOrderDocRef) {
+                  await updateDoc(newOrderDocRef, { ecpayParams: ecpayParams });
                 }
 
                 setPendingPaymentData(ecpayParams);
-                setCart([]); // 清空購物車
+                setCart([]); // 建立付款資料後清空購物車
              } catch (err) {
                 console.error("API 請求失敗:", err);
                 showToast("安全連線建立失敗，請確認綠界後端網址是否正確。");
+                setCart([]);
+                setTimeout(() => { setShowCart(false); setCheckoutStep(false); }, 2000);
              }
-             return; 
           }
 
-          if (!isECPayRequired) {
-            setCart([]);
-            setShowCart(false);
-            setTimeout(() => setCheckoutStep(false), 300);
-          }
-
-          if (GAS_WEBHOOK_URL) {
-            try {
-              fetch(GAS_WEBHOOK_URL, {
-                method: 'POST',
-                mode: 'no-cors', 
-                headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-                body: JSON.stringify({ rows: gasRows })
-              }).catch(e => console.error("GAS 傳送錯誤", e));
-            } catch (error) {
-              console.error("GAS 執行錯誤:", error);
-            }
-          }
-
-          if (isLiffReady && liff.isInClient()) {
-            try {
-              showToast("處理中，請稍候...");
-              await liff.sendMessages([{
-                type: 'text',
-                text: lineMessageText
-              }]);
-              showToast("✅ 訂單已自動傳送成功！");
-              setTimeout(() => {
-                liff.closeWindow(); 
-              }, 1500);
-            } catch (liffError) {
-              console.error("LIFF 傳送失敗:", liffError);
-              showToast("訂單建立成功，但訊息發送失敗，請手動聯絡客服。");
-            }
-          } else {
-            showToast("⚠️ 未使用 LIFF 開啟，轉為手動發送...");
-            setTimeout(() => {
-              const encodedMessage = encodeURIComponent(lineMessageText);
-              window.location.href = `https://line.me/R/oaMessage/${LINE_OA_ID}/?${encodedMessage}`;
-            }, 1500);
-          }
         } catch (error) {
           console.error("送出訂單發生錯誤:", error);
           showToast("送出失敗，請檢查網路連線。");
@@ -815,7 +831,7 @@
           </main>
 
           <div className="text-center text-[10px] text-gray-400 pb-2">
-            系統狀態: {liffStatus} | V1.25.0
+            系統狀態: {liffStatus} | V1.27.0
           </div>
 
           {cart.length > 0 && !showCart && (
@@ -866,9 +882,9 @@
                       <div className="w-20 h-20 bg-green-100 text-green-500 rounded-full flex items-center justify-center mb-6 shadow-sm">
                         <i className="fas fa-check text-4xl"></i>
                       </div>
-                      <h3 className="text-2xl font-black text-gray-800 mb-3">訂單已成功建立！</h3>
+                      <h3 className="text-2xl font-black text-gray-800 mb-3">安全連線建立成功！</h3>
                       <p className="text-sm text-gray-500 mb-8 leading-relaxed">
-                        系統已為您保留商品。<br/>
+                        您的訂單與庫存已為您保留。<br/>
                         為了保護您的交易安全，請點擊下方按鈕<br/>前往<span className="font-bold text-gray-700">「綠界科技 ECPay」</span>完成結帳流程。
                       </p>
                       
@@ -880,7 +896,7 @@
                           <i className="fas fa-lock"></i> 確認前往安全付款
                         </button>
                       </form>
-                      <p className="text-[10px] text-gray-400 mt-4">(若不小心關閉此視窗，可至歷史訂單查看，但無法重新付款)</p>
+                      <p className="text-[10px] text-gray-400 mt-4">(若中途關閉此視窗，可至右上角「歷史訂單」中重新付款)</p>
                     </div>
                   ) : cart.length === 0 ? (
                     <div className="text-center py-10 text-gray-400">購物車空空的耶</div>
@@ -941,12 +957,13 @@
                             <div className="p-3 bg-gray-50 border border-gray-200 rounded-xl space-y-3 mt-2">
                               
                               <div>
-                                <label className="block text-xs text-gray-500 mb-1">付款方式</label>
+                                <label className="block text-xs text-gray-500 mb-1">付款方式 <span className="text-red-500">*</span></label>
                                 <select 
-                                  value={userProfile.paymentMethod || '信用卡 (綠界)'} 
+                                  value={userProfile.paymentMethod || ''} 
                                   onChange={e => setUserProfile({...userProfile, paymentMethod: e.target.value})} 
-                                  className="w-full p-3 border border-gray-300 rounded-xl outline-none focus:ring-2 focus:ring-orange-300 bg-white font-medium"
+                                  className={`w-full p-3 border border-gray-300 rounded-xl outline-none focus:ring-2 focus:ring-orange-300 bg-white font-medium ${!userProfile.paymentMethod ? 'text-gray-400' : 'text-gray-800'}`}
                                 >
+                                  <option value="" disabled>請選擇付款方式</option>
                                   <option value="信用卡 (綠界)">信用卡線上刷卡</option>
                                   <option value="ATM虛擬帳號 (綠界)">ATM 虛擬帳號轉帳</option>
                                   <option value="超商代碼 (綠界)">超商代碼繳費</option>
@@ -955,17 +972,18 @@
                               </div>
 
                               <div>
-                                <label className="block text-xs text-gray-500 mb-1">配送方式</label>
+                                <label className="block text-xs text-gray-500 mb-1">配送方式 <span className="text-red-500">*</span></label>
                                 <select 
-                                  value={userProfile.shippingMethod || '宅配'} 
+                                  value={userProfile.shippingMethod || ''} 
                                   onChange={e => setUserProfile({
                                       ...userProfile, 
                                       shippingMethod: e.target.value,
                                       address: e.target.value === '超商取貨 (綠界)' ? '' : userProfile.address,
                                       cvsStoreName: ''
                                   })} 
-                                  className="w-full p-3 border border-gray-300 rounded-xl outline-none focus:ring-2 focus:ring-orange-300 bg-white font-medium"
+                                  className={`w-full p-3 border border-gray-300 rounded-xl outline-none focus:ring-2 focus:ring-orange-300 bg-white font-medium ${!userProfile.shippingMethod ? 'text-gray-400' : 'text-gray-800'}`}
                                 >
+                                  <option value="" disabled>請選擇配送方式</option>
                                   <option value="宅配">宅配到府</option>
                                   <option value="超商取貨 (綠界)">超商門市取貨</option>
                                 </select>
@@ -1095,7 +1113,7 @@
 
           {showHistory && (
             <div className="fixed inset-0 bg-black/50 z-50 flex justify-center items-end md:items-center p-0 md:p-4 backdrop-blur-sm transition-opacity">
-              <div className="bg-white w-full max-w-lg md:rounded-3xl rounded-t-3xl h-[85vh] md:h-auto max-h-[90vh] flex flex-col overflow-hidden shadow-2xl">
+              <div className="bg-white w-full max-w-lg md:rounded-3xl rounded-t-3xl h-[85vh] md:h-auto max-h-[90vh] flex flex-col overflow-hidden shadow-2xl animate-slide-up md:animate-scale-in">
                 <div className="p-4 border-b border-gray-100 flex justify-between items-center bg-gray-50">
                   <h2 className="text-xl font-bold flex items-center gap-2"><i className="fas fa-clock-rotate-left"></i> 歷史訂單</h2>
                   <button onClick={() => setShowHistory(false)} className="p-2 bg-gray-200 rounded-full hover:bg-gray-300 transition-colors w-8 h-8 flex items-center justify-center"><i className="fas fa-times"></i></button>
@@ -1112,7 +1130,17 @@
                             <span className="text-xs text-gray-400">
                               {order.createdAt?.toMillis ? new Date(order.createdAt.toMillis()).toLocaleString('zh-TW') : '剛剛'}
                             </span>
+                            {/* V1.26.0 狀態顯示優化 */}
+                            <span className={`text-xs px-2 py-1 rounded font-bold ${order.status === '未付款' ? 'bg-red-50 text-red-600' : 'bg-green-50 text-green-600'}`}>
+                              {order.status}
+                            </span>
                           </div>
+                          
+                          {/* V1.26.0 新增訂單編號 */}
+                          <div className="text-sm font-bold text-gray-700 mb-3 border-b border-dashed border-gray-200 pb-2">
+                            訂單編號：<span className="text-gray-500 font-normal">{order.platformOrderId}</span>
+                          </div>
+
                           <div className="space-y-2 mb-3">
                             {order.items.map((item, idx) => {
                               const promo = parsePromotion(item.promotion, item.variant.price);
@@ -1144,6 +1172,27 @@
                             <span className="text-sm text-gray-600">總計</span>
                             <span className="text-orange-600">${order.totalAmount}</span>
                           </div>
+
+                          {/* V1.26.0 重新付款按鈕邏輯 */}
+                          {order.status === '未付款' && (
+                            <div className="mt-4 pt-4 border-t border-gray-100">
+                              <p className="text-xs text-red-500 mb-2 font-medium">付款尚未完成，請重新下單或點擊下方按鈕重新付款：</p>
+                              {order.ecpayParams ? (
+                                <button
+                                  onClick={() => {
+                                    setPendingPaymentData(order.ecpayParams);
+                                    setShowHistory(false);
+                                    setShowCart(true);
+                                  }}
+                                  className="w-full py-2.5 bg-orange-500 text-white rounded-lg text-sm font-bold shadow-sm hover:bg-orange-600 transition-colors flex items-center justify-center gap-2"
+                                >
+                                  <i className="fas fa-credit-card"></i> 重新付款
+                                </button>
+                              ) : (
+                                <p className="text-xs text-gray-400 text-center bg-gray-50 p-2 rounded">訂單已逾期，請返回目錄重新選購下單。</p>
+                              )}
+                            </div>
+                          )}
                         </div>
                       ))}
                     </div>
