@@ -32,15 +32,15 @@
     /* ==============================================================================
      * 【版本公告與更新日誌】
      * ==============================================================================
-     * 版本: V1.32.0 (防竄改自動發送版)
+     * 版本: V1.33.0 (LINE 訊息狀態精簡版)
      * 日期: 2026-03-29
      * * 【歷史更新簡要】
-     * - V1.29.0: 表單動線優化，將發票與備註移至上方。
      * - V1.30.0: 歷史訂單防呆，新增付款失敗紅字警告。
      * - V1.31.0: 格式恢復動態抓取顧客實際付款與出貨方式。
-     * * 【V1.32.0 更新內容 (本次更新)】
-     * 1. 【防竄改自動發送】捨棄容易被顧客手動修改明細的 oaMessage 導向機制，全面恢復使用 LIFF 內建的 `sendMessages()`。現在訂單送出或付款成功時，會「瞬間自動」傳送訊息並關閉畫面，杜絕人為竄改風險。
-     * 2. 【防誤傳提醒】在購物車與結帳頁面上方加入顯眼紅字警告，提醒顧客必須在官方帳號內開啟，雙管齊下防範錯傳。
+     * - V1.32.0: 捨棄容易被竄改的導向機制，全面恢復自動發送。
+     * * 【V1.33.0 更新內容 (本次更新)】
+     * 1. 【下單訊息標題調整】送出訂單時，LINE 訊息首行改為顯示「【訂單編號：XXX】【待付款/貨到付款】」，一眼辨識訂單狀態。
+     * 2. 【付款成功訊息精簡】綠界線上付款完成後，僅傳送極簡的「【訂單編號：XXX】【已付款】」，不再重複發送落落長的商品明細，讓客服對帳更俐落。
      * ============================================================================== */
     const { useState, useEffect, useMemo } = React;
 
@@ -302,7 +302,7 @@
         return () => unsubscribeOrders();
       }, [user]);
 
-      // ✅ V1.32.0: 付款成功跳轉後，改回直接傳送以防竄改
+      // 付款成功跳轉後處理
       useEffect(() => {
         if (!isLiffReady || orders.length === 0 || !user || !db) return;
 
@@ -319,30 +319,14 @@
           const orderDocRef = doc(db, 'artifacts', appId, 'users', user.uid, 'orders', targetOrder.id);
           updateDoc(orderDocRef, { status: '已付款' }).catch(e => console.error(e));
 
-          let lineMessageText = `【肥貓客棧 - 🟢綠界線上付款成功】\n`;
-          lineMessageText += `訂單編號：${targetOrder.platformOrderId}\n`;
-          lineMessageText += `訂購人：${targetOrder.recipient.name}\n`;
-          lineMessageText += `電話：${targetOrder.recipient.phone}\n`;
-          lineMessageText += `配送方式：${targetOrder.recipient.shippingMethod}\n`;
-          if (targetOrder.recipient.shippingMethod === '超商取貨 (綠界)') {
-             lineMessageText += `門市：${targetOrder.recipient.cvsStoreName} (${targetOrder.recipient.address})\n`;
-          } else {
-             lineMessageText += `地址：${targetOrder.recipient.address}\n`;
-          }
-          lineMessageText += `付款方式：${targetOrder.recipient.paymentMethod}\n`;
-          lineMessageText += `------------------\n`;
-          targetOrder.items.forEach((item, idx) => {
-            lineMessageText += `${idx+1}. ${item.name} (${item.variant.name}) x${item.quantity}\n`;
-          });
-          lineMessageText += `------------------\n`;
-          lineMessageText += `總計金額：$${targetOrder.totalAmount}\n`;
-          lineMessageText += `✅ 系統已收到您的款項，將盡快為您安排出貨！`;
+          // ✅ V1.33.0: 付完款時，改為只傳送【訂單編號】+【已付款】的極簡訊息
+          let lineMessageText = `【訂單編號：${targetOrder.platformOrderId}】【已付款】`;
 
-          // ✅ 恢復瞬間發送，並在發送後清除網址參數
+          // 恢復瞬間發送，並在發送後清除網址參數
           if (liff.isInClient()) {
             liff.sendMessages([{ type: 'text', text: lineMessageText }])
               .then(() => {
-                showToast("✅ 付款成功！訂單明細已自動傳送。");
+                showToast("✅ 付款成功！訂單已確認。");
               })
               .catch(err => {
                 console.error("LIFF 傳送失敗:", err);
@@ -589,8 +573,9 @@
             newOrderDocRef = await addDoc(ordersRef, newOrder);
           }
 
-          let lineMessageText = `【肥貓客棧 - 新訂單】\n`;
-          lineMessageText += `訂單編號：${platformOrderId}\n`;
+          // ✅ V1.33.0: 將標題改為 【訂單編號】+【待付款/貨到付款】
+          let titleStatus = userProfile.paymentMethod === '貨到付款' ? '貨到付款' : '待付款';
+          let lineMessageText = `【訂單編號：${platformOrderId}】【${titleStatus}】\n`;
           lineMessageText += `訂購人：${userProfile.name}\n`;
           lineMessageText += `電話：${userProfile.phone}\n`;
           lineMessageText += `配送方式：${userProfile.shippingMethod}\n`;
@@ -686,7 +671,7 @@
               }).catch(e => console.error("GAS 傳送錯誤", e));
             }
 
-            // ✅ V1.32.0: 捨棄導向官方帳號，改回原本的直接發送，杜絕竄改
+            // 捨棄導向官方帳號，改回原本的直接發送，杜絕竄改
             if (isLiffReady && liff.isInClient()) {
               try {
                 showToast("處理中，請稍候...");
@@ -910,7 +895,7 @@
           </main>
 
           <div className="text-center text-[10px] text-gray-400 pb-2">
-            系統狀態: {liffStatus} | V1.32.0
+            系統狀態: {liffStatus} | V1.33.0
           </div>
 
           {cart.length > 0 && !showCart && (
@@ -983,7 +968,6 @@
                     <div className="space-y-4">
                       {!checkoutStep ? (
                         <>
-                          {/* ✅ V1.32.0: 購物車防錯傳警告標語 */}
                           <div className="bg-red-50 border border-red-200 text-red-600 px-3 py-2 rounded-lg text-xs sm:text-sm font-bold flex items-start gap-2 mb-2 shadow-sm animate-scale-in">
                             <i className="fas fa-exclamation-triangle mt-0.5 text-lg"></i>
                             <span>⚠️ 確保訂單建立，請確認您目前是在「肥貓客棧官方帳號」內開啟此目錄唷！</span>
