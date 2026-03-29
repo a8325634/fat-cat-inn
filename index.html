@@ -32,15 +32,15 @@
     /* ==============================================================================
      * 【版本公告與更新日誌】
      * ==============================================================================
-     * 版本: V1.29.0 (表單動線優化與完美對帳版)
+     * 版本: V1.30.0 (ERP 格式精準校對與歷史訂單防呆版)
      * 日期: 2026-03-29
      * * 【歷史更新簡要】
-     * - V1.26.0: 歷史訂單新增狀態顯示與重新付款。
      * - V1.27.0: 加入防誤出貨機制，綠界付款前不傳送 LINE 通知。
      * - V1.28.0: 狀態保存修復與付款成功跳轉自動傳送 LINE 通知。
-     * * 【V1.29.0 更新內容 (本次更新)】
-     * 1. 【表單排序優化】將「發票類型」與「買家備註」的輸入欄位，移動至「付款方式」上方，優化結帳填寫動線。
-     * 2. 【23欄完美對帳】綠界線上付款成功後，現在會將完整的購物車商品明細與客人資訊打包傳給後端，讓後端能自動拆分出 100% 符合莫筆克 23 欄標準格式的訂單資料。
+     * - V1.29.0: 表單動線優化，將發票與備註移至上方。
+     * * 【V1.30.0 更新內容 (本次更新)】
+     * 1. 【報表格式校正】包含前端與後端，嚴格將 Google Sheets 陣列修正為符合莫筆克的 23 欄固定格式。並強制將付款方式鎖定為「貨到付款」、出貨方式鎖定為「新竹物流[代收]」。
+     * 2. 【訂單狀態防呆】將歷史訂單中的「未付款」狀態移除「重新付款」按鈕，改為顯示紅字警告「【付款失敗，請重新下單】」，防止逾期付款導致的後續對帳問題。
      * ============================================================================== */
     const { useState, useEffect, useMemo } = React;
 
@@ -344,7 +344,7 @@
               })
               .catch(err => {
                 console.error("LIFF 傳送失敗:", err);
-                showToast("✅ 付款成功！(自動傳送失敗，請手手動聯絡客服)");
+                showToast("✅ 付款成功！(自動傳送失敗，請手動聯絡客服)");
               });
           } else {
             showToast("✅ 付款成功！訂單已確認。");
@@ -631,6 +631,7 @@
               lineMessageText += `   [🎁 贈品: ${promo.gift} x${item.quantity}]\n`;
             }
 
+            // ✅ V1.30.0: 確保前端傳送至 GAS 的格式也完全 100% 鎖死 23 欄與指定字串
             gasRows.push([
               '自訂交易', 
               '0', 
@@ -643,8 +644,8 @@
               item.quantity, 
               rowSubtotal, 
               '', 
-              userProfile.paymentMethod || '貨到付款', 
-              userProfile.shippingMethod || '宅配', 
+              '貨到付款',           // 鎖死
+              '新竹物流[代收]',       // 鎖死
               userProfile.address || '', 
               userProfile.buyerNote || '', 
               '', 
@@ -675,7 +676,6 @@
 
           if (!isECPayRequired) {
             
-            // 1. 寫入 Google Sheets
             if (GAS_WEBHOOK_URL) {
               fetch(GAS_WEBHOOK_URL, {
                 method: 'POST',
@@ -685,7 +685,6 @@
               }).catch(e => console.error("GAS 傳送錯誤", e));
             }
 
-            // 2. 傳送 LINE 訊息
             if (isLiffReady && liff.isInClient()) {
               try {
                 showToast("處理中，請稍候...");
@@ -703,13 +702,11 @@
               }, 1500);
             }
             
-            // 貨到付款結帳完成，清空購物車並關閉視窗
             setCart([]);
             setShowCart(false);
             setTimeout(() => setCheckoutStep(false), 300);
 
           } else {
-             // 處理綠界線上付款連線，僅提示使用者，不發送上述通知
              showToast("訂單已建立，準備建立安全連線...");
              
              let choosePayment = 'ALL';
@@ -728,7 +725,6 @@
                returnUrl += `?paidOrderId=${platformOrderId}`;
              }
 
-             // ✅ V1.29.0: 將完整的商品與收件人資料打包壓縮，一併夾帶給後端，以便完成付款後能 100% 拆解出完美報表
              const miniCart = cart.map(i => ({
                 b: i.variant.barcode || '',
                 q: i.quantity,
@@ -762,7 +758,7 @@
                 }
 
                 setPendingPaymentData(ecpayParams);
-                setCart([]); // 建立付款資料後清空購物車
+                setCart([]); 
              } catch (err) {
                 console.error("API 請求失敗:", err);
                 showToast("安全連線建立失敗，請確認綠界後端網址是否正確。");
@@ -911,7 +907,7 @@
           </main>
 
           <div className="text-center text-[10px] text-gray-400 pb-2">
-            系統狀態: {liffStatus} | V1.29.0
+            系統狀態: {liffStatus} | V1.30.0
           </div>
 
           {cart.length > 0 && !showCart && (
@@ -976,7 +972,7 @@
                           <i className="fas fa-lock"></i> 確認前往安全付款
                         </button>
                       </form>
-                      <p className="text-[10px] text-gray-400 mt-4">(若中途關閉此視窗，可至右上角「歷史訂單」中重新付款)</p>
+                      <p className="text-[10px] text-gray-400 mt-4">(若中途關閉此視窗，需重新下單)</p>
                     </div>
                   ) : cart.length === 0 ? (
                     <div className="text-center py-10 text-gray-400">購物車空空的耶</div>
@@ -1036,7 +1032,6 @@
                             
                             <div className="p-3 bg-gray-50 border border-gray-200 rounded-xl space-y-3 mt-2">
                               
-                              {/* ✅ V1.29.0 版面調動：發票與備註移至上方 */}
                               <div>
                                 <label className="block text-xs text-gray-500 mb-1">發票類型</label>
                                 <select value={userProfile.invoiceType || ''} onChange={e => setUserProfile({...userProfile, invoiceType: e.target.value, taxId: '', cloudInvoiceType: '', mobileBarcode: ''})} className="w-full p-3 border border-gray-300 rounded-xl outline-none focus:ring-2 focus:ring-orange-300 bg-white">
@@ -1070,7 +1065,6 @@
                                 <textarea placeholder="有什麼想告訴我們的嗎？(選填)" value={userProfile.buyerNote || ''} onChange={e => setUserProfile({...userProfile, buyerNote: e.target.value})} className="w-full p-3 border border-gray-300 rounded-xl outline-none focus:ring-2 focus:ring-orange-300 resize-none h-16" />
                               </div>
 
-                              {/* 付款與配送方式 */}
                               <div>
                                 <label className="block text-xs text-gray-500 mb-1">付款方式 <span className="text-red-500">*</span></label>
                                 <select 
@@ -1253,23 +1247,10 @@
                             <span className="text-orange-600">${order.totalAmount}</span>
                           </div>
 
+                          {/* ✅ V1.30.0: 移除重新付款按鈕，套用紅色警告標語 */}
                           {order.status === '未付款' && (
                             <div className="mt-4 pt-4 border-t border-gray-100">
-                              <p className="text-xs text-red-500 mb-2 font-medium">付款尚未完成，請重新下單或點擊下方按鈕重新付款：</p>
-                              {order.ecpayParams ? (
-                                <button
-                                  onClick={() => {
-                                    setPendingPaymentData(order.ecpayParams);
-                                    setShowHistory(false);
-                                    setShowCart(true);
-                                  }}
-                                  className="w-full py-2.5 bg-orange-500 text-white rounded-lg text-sm font-bold shadow-sm hover:bg-orange-600 transition-colors flex items-center justify-center gap-2"
-                                >
-                                  <i className="fas fa-credit-card"></i> 重新付款
-                                </button>
-                              ) : (
-                                <p className="text-xs text-gray-400 text-center bg-gray-50 p-2 rounded">訂單已逾期，請返回目錄重新選購下單。</p>
-                              )}
+                              <p className="text-sm text-red-600 font-bold text-center">【付款失敗，請重新下單】</p>
                             </div>
                           )}
                         </div>
