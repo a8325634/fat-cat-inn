@@ -32,15 +32,15 @@
     /* ==============================================================================
      * 【版本公告與更新日誌】
      * ==============================================================================
-     * 版本: V1.28.0 (超商狀態保存與付款成功回傳版)
-     * 日期: 2026-03-28
+     * 版本: V1.29.0 (表單動線優化與完美對帳版)
+     * 日期: 2026-03-29
      * * 【歷史更新簡要】
-     * - V1.25.0: 修正綠界訂單編號底線錯誤。
-     * - V1.26.0: 歷史訂單新增狀態顯示與「重新付款」按鈕，並重置結帳選項防止選錯。
+     * - V1.26.0: 歷史訂單新增狀態顯示與重新付款。
      * - V1.27.0: 加入防誤出貨機制，綠界付款前不傳送 LINE 通知。
-     * * 【V1.28.0 更新內容 (本次更新)】
-     * 1. 【狀態保存修復】修復從超商電子地圖跳轉回來時，因載入顧客預設資料導致「付款方式」及「配送方式」被異常清空的問題。
-     * 2. 【付款成功通知】新增綠界付款完成跳轉偵測。客人付款完返回商店時，系統會自動將 Firebase 訂單更新為「已付款」，並觸發 LINE 成功訊息傳送給人工客服。
+     * - V1.28.0: 狀態保存修復與付款成功跳轉自動傳送 LINE 通知。
+     * * 【V1.29.0 更新內容 (本次更新)】
+     * 1. 【表單排序優化】將「發票類型」與「買家備註」的輸入欄位，移動至「付款方式」上方，優化結帳填寫動線。
+     * 2. 【23欄完美對帳】綠界線上付款成功後，現在會將完整的購物車商品明細與客人資訊打包傳給後端，讓後端能自動拆分出 100% 符合莫筆克 23 欄標準格式的訂單資料。
      * ============================================================================== */
     const { useState, useEffect, useMemo } = React;
 
@@ -268,8 +268,6 @@
 
         const fetchProfile = async () => {
           try {
-            // ✅ V1.28.0 狀態保存修復：如果網址有 storeName，代表是從超商地圖回傳
-            // 系統必須「中止」載入空白預設值，保留客人剛剛選好的付款方式與配送方式！
             const urlParams = new URLSearchParams(window.location.search);
             if (urlParams.get('storeName')) return; 
 
@@ -304,7 +302,6 @@
         return () => unsubscribeOrders();
       }, [user]);
 
-      // ✅ V1.28.0 付款成功通知：偵測從綠界「付款完成返回商店」跳轉回來的訂單
       useEffect(() => {
         if (!isLiffReady || orders.length === 0 || !user || !db) return;
 
@@ -312,18 +309,15 @@
         const paidOrderId = urlParams.get('paidOrderId');
         if (!paidOrderId) return;
 
-        // 避免重新整理時重複執行
         if (sessionStorage.getItem(`processed_${paidOrderId}`)) return;
 
         const targetOrder = orders.find(o => o.platformOrderId === paidOrderId);
         if (targetOrder && targetOrder.status === '未付款') {
           sessionStorage.setItem(`processed_${paidOrderId}`, 'true');
           
-          // 1. 更新 Firebase 訂單狀態為「已付款」
           const orderDocRef = doc(db, 'artifacts', appId, 'users', user.uid, 'orders', targetOrder.id);
           updateDoc(orderDocRef, { status: '已付款' }).catch(e => console.error(e));
 
-          // 2. 組合並發送 LINE 成功付款訊息給客服
           let lineMessageText = `【肥貓客棧 - 🟢綠界線上付款成功】\n`;
           lineMessageText += `訂單編號：${targetOrder.platformOrderId}\n`;
           lineMessageText += `訂購人：${targetOrder.recipient.name}\n`;
@@ -350,17 +344,15 @@
               })
               .catch(err => {
                 console.error("LIFF 傳送失敗:", err);
-                showToast("✅ 付款成功！(自動傳送失敗，請手動聯絡客服)");
+                showToast("✅ 付款成功！(自動傳送失敗，請手手動聯絡客服)");
               });
           } else {
             showToast("✅ 付款成功！訂單已確認。");
           }
           
-          // 清理網址參數，保持網址乾淨
           const newUrl = window.location.pathname + (window.location.search.replace(/paidOrderId=[^&]+&?/, '').replace(/\?$/, ''));
           window.history.replaceState({}, document.title, newUrl || '/');
           
-          // 顯示歷史訂單畫面讓客人確認
           setShowHistory(true);
         }
       }, [orders, isLiffReady, user, db]);
@@ -730,15 +722,34 @@
                returnUrl = `https://liff.line.me/${LIFF_ID}`;
              }
 
-             // ✅ V1.28.0: 將訂單編號加上跳轉網址，以便客人付款完成返回時能被我們抓到！
              if (returnUrl.includes('?')) {
                returnUrl += `&paidOrderId=${platformOrderId}`;
              } else {
                returnUrl += `?paidOrderId=${platformOrderId}`;
              }
 
+             // ✅ V1.29.0: 將完整的商品與收件人資料打包壓縮，一併夾帶給後端，以便完成付款後能 100% 拆解出完美報表
+             const miniCart = cart.map(i => ({
+                b: i.variant.barcode || '',
+                q: i.quantity,
+                p: parsePromotion(i.promotion, i.variant.price).finalPrice
+             }));
+             const miniProfile = {
+                n: userProfile.name || '',
+                p: userProfile.phone || '',
+                m: userProfile.paymentMethod || '',
+                s: userProfile.shippingMethod || '',
+                a: userProfile.address || '',
+                b: userProfile.buyerNote || '',
+                i: userProfile.invoiceType || '',
+                ct: userProfile.cloudInvoiceType || '',
+                mb: userProfile.mobileBarcode || '',
+                t: userProfile.taxId || ''
+             };
+             const orderDataStr = encodeURIComponent(JSON.stringify({ c: miniCart, u: miniProfile }));
              const itemsString = encodeURIComponent(cart.map(i => `${i.name} x${i.quantity}`).join('#'));
-             const apiUrl = `${ECPAY_BACKEND_URL}?action=getMacValue&orderId=${platformOrderId}&amount=${cartTotal}&items=${itemsString}&paymentMethod=${choosePayment}&returnUrl=${encodeURIComponent(returnUrl)}`;
+             
+             const apiUrl = `${ECPAY_BACKEND_URL}?action=getMacValue&orderId=${platformOrderId}&amount=${cartTotal}&items=${itemsString}&paymentMethod=${choosePayment}&returnUrl=${encodeURIComponent(returnUrl)}&od=${orderDataStr}`;
 
              try {
                 const response = await fetch(apiUrl);
@@ -900,7 +911,7 @@
           </main>
 
           <div className="text-center text-[10px] text-gray-400 pb-2">
-            系統狀態: {liffStatus} | V1.28.0
+            系統狀態: {liffStatus} | V1.29.0
           </div>
 
           {cart.length > 0 && !showCart && (
@@ -1025,6 +1036,41 @@
                             
                             <div className="p-3 bg-gray-50 border border-gray-200 rounded-xl space-y-3 mt-2">
                               
+                              {/* ✅ V1.29.0 版面調動：發票與備註移至上方 */}
+                              <div>
+                                <label className="block text-xs text-gray-500 mb-1">發票類型</label>
+                                <select value={userProfile.invoiceType || ''} onChange={e => setUserProfile({...userProfile, invoiceType: e.target.value, taxId: '', cloudInvoiceType: '', mobileBarcode: ''})} className="w-full p-3 border border-gray-300 rounded-xl outline-none focus:ring-2 focus:ring-orange-300 bg-white">
+                                  <option value="">不需要 / 未選擇</option>
+                                  <option value="統一編號">統一編號</option>
+                                  <option value="雲端發票">雲端發票</option>
+                                </select>
+                              </div>
+                              
+                              {userProfile.invoiceType === '統一編號' && (
+                                <div className="animate-scale-in">
+                                  <input type="text" placeholder="請輸入統一編號" value={userProfile.taxId || ''} onChange={e => setUserProfile({...userProfile, taxId: e.target.value})} className="w-full p-3 border border-gray-300 rounded-xl outline-none focus:ring-2 focus:ring-orange-300" />
+                                </div>
+                              )}
+                              
+                              {userProfile.invoiceType === '雲端發票' && (
+                                <div className="space-y-3 animate-scale-in">
+                                  <select value={userProfile.cloudInvoiceType || ''} onChange={e => setUserProfile({...userProfile, cloudInvoiceType: e.target.value, mobileBarcode: ''})} className="w-full p-3 border border-gray-300 rounded-xl outline-none focus:ring-2 focus:ring-orange-300 bg-white">
+                                    <option value="">請選擇雲端發票載具</option>
+                                    <option value="會員載具">儲存在會員內</option>
+                                    <option value="手機條碼">輸入手機條碼</option>
+                                  </select>
+                                  {userProfile.cloudInvoiceType === '手機條碼' && (
+                                    <input type="text" placeholder="請輸入手機條碼 (如: /AAA123)" value={userProfile.mobileBarcode || ''} onChange={e => setUserProfile({...userProfile, mobileBarcode: e.target.value.toUpperCase()})} className="w-full p-3 border border-gray-300 rounded-xl outline-none focus:ring-2 focus:ring-orange-300" />
+                                  )}
+                                </div>
+                              )}
+                              
+                              <div>
+                                <label className="block text-xs text-gray-500 mb-1">買家備註</label>
+                                <textarea placeholder="有什麼想告訴我們的嗎？(選填)" value={userProfile.buyerNote || ''} onChange={e => setUserProfile({...userProfile, buyerNote: e.target.value})} className="w-full p-3 border border-gray-300 rounded-xl outline-none focus:ring-2 focus:ring-orange-300 resize-none h-16" />
+                              </div>
+
+                              {/* 付款與配送方式 */}
                               <div>
                                 <label className="block text-xs text-gray-500 mb-1">付款方式 <span className="text-red-500">*</span></label>
                                 <select 
@@ -1096,39 +1142,6 @@
                                 disabled={userProfile.shippingMethod === '超商取貨 (綠界)'}
                                 className={`w-full p-3 border border-gray-300 rounded-xl outline-none focus:ring-2 focus:ring-orange-300 resize-none h-16 ${userProfile.shippingMethod === '超商取貨 (綠界)' ? 'bg-gray-100 cursor-not-allowed text-gray-400' : 'bg-white'}`} 
                               />
-
-                              <div>
-                                <label className="block text-xs text-gray-500 mb-1">發票類型</label>
-                                <select value={userProfile.invoiceType || ''} onChange={e => setUserProfile({...userProfile, invoiceType: e.target.value, taxId: '', cloudInvoiceType: '', mobileBarcode: ''})} className="w-full p-3 border border-gray-300 rounded-xl outline-none focus:ring-2 focus:ring-orange-300 bg-white">
-                                  <option value="">不需要 / 未選擇</option>
-                                  <option value="統一編號">統一編號</option>
-                                  <option value="雲端發票">雲端發票</option>
-                                </select>
-                              </div>
-                              
-                              {userProfile.invoiceType === '統一編號' && (
-                                <div className="animate-scale-in">
-                                  <input type="text" placeholder="請輸入統一編號" value={userProfile.taxId || ''} onChange={e => setUserProfile({...userProfile, taxId: e.target.value})} className="w-full p-3 border border-gray-300 rounded-xl outline-none focus:ring-2 focus:ring-orange-300" />
-                                </div>
-                              )}
-                              
-                              {userProfile.invoiceType === '雲端發票' && (
-                                <div className="space-y-3 animate-scale-in">
-                                  <select value={userProfile.cloudInvoiceType || ''} onChange={e => setUserProfile({...userProfile, cloudInvoiceType: e.target.value, mobileBarcode: ''})} className="w-full p-3 border border-gray-300 rounded-xl outline-none focus:ring-2 focus:ring-orange-300 bg-white">
-                                    <option value="">請選擇雲端發票載具</option>
-                                    <option value="會員載具">儲存在會員內</option>
-                                    <option value="手機條碼">輸入手機條碼</option>
-                                  </select>
-                                  {userProfile.cloudInvoiceType === '手機條碼' && (
-                                    <input type="text" placeholder="請輸入手機條碼 (如: /AAA123)" value={userProfile.mobileBarcode || ''} onChange={e => setUserProfile({...userProfile, mobileBarcode: e.target.value.toUpperCase()})} className="w-full p-3 border border-gray-300 rounded-xl outline-none focus:ring-2 focus:ring-orange-300" />
-                                  )}
-                                </div>
-                              )}
-                              
-                              <div>
-                                <label className="block text-xs text-gray-500 mb-1">買家備註</label>
-                                <textarea placeholder="有什麼想告訴我們的嗎？(選填)" value={userProfile.buyerNote || ''} onChange={e => setUserProfile({...userProfile, buyerNote: e.target.value})} className="w-full p-3 border border-gray-300 rounded-xl outline-none focus:ring-2 focus:ring-orange-300 resize-none h-16" />
-                              </div>
                             </div>
                           </div>
                         </div>
