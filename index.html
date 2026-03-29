@@ -32,15 +32,15 @@
     /* ==============================================================================
      * 【版本公告與更新日誌】
      * ==============================================================================
-     * 版本: V1.30.0 (ERP 格式精準校對與歷史訂單防呆版)
+     * 版本: V1.32.0 (防竄改自動發送版)
      * 日期: 2026-03-29
      * * 【歷史更新簡要】
-     * - V1.27.0: 加入防誤出貨機制，綠界付款前不傳送 LINE 通知。
-     * - V1.28.0: 狀態保存修復與付款成功跳轉自動傳送 LINE 通知。
      * - V1.29.0: 表單動線優化，將發票與備註移至上方。
-     * * 【V1.30.0 更新內容 (本次更新)】
-     * 1. 【報表格式校正】包含前端與後端，嚴格將 Google Sheets 陣列修正為符合莫筆克的 23 欄固定格式。並強制將付款方式鎖定為「貨到付款」、出貨方式鎖定為「新竹物流[代收]」。
-     * 2. 【訂單狀態防呆】將歷史訂單中的「未付款」狀態移除「重新付款」按鈕，改為顯示紅字警告「【付款失敗，請重新下單】」，防止逾期付款導致的後續對帳問題。
+     * - V1.30.0: 歷史訂單防呆，新增付款失敗紅字警告。
+     * - V1.31.0: 格式恢復動態抓取顧客實際付款與出貨方式。
+     * * 【V1.32.0 更新內容 (本次更新)】
+     * 1. 【防竄改自動發送】捨棄容易被顧客手動修改明細的 oaMessage 導向機制，全面恢復使用 LIFF 內建的 `sendMessages()`。現在訂單送出或付款成功時，會「瞬間自動」傳送訊息並關閉畫面，杜絕人為竄改風險。
+     * 2. 【防誤傳提醒】在購物車與結帳頁面上方加入顯眼紅字警告，提醒顧客必須在官方帳號內開啟，雙管齊下防範錯傳。
      * ============================================================================== */
     const { useState, useEffect, useMemo } = React;
 
@@ -302,6 +302,7 @@
         return () => unsubscribeOrders();
       }, [user]);
 
+      // ✅ V1.32.0: 付款成功跳轉後，改回直接傳送以防竄改
       useEffect(() => {
         if (!isLiffReady || orders.length === 0 || !user || !db) return;
 
@@ -337,14 +338,15 @@
           lineMessageText += `總計金額：$${targetOrder.totalAmount}\n`;
           lineMessageText += `✅ 系統已收到您的款項，將盡快為您安排出貨！`;
 
+          // ✅ 恢復瞬間發送，並在發送後清除網址參數
           if (liff.isInClient()) {
             liff.sendMessages([{ type: 'text', text: lineMessageText }])
               .then(() => {
-                showToast("✅ 付款成功！LINE 通知已發送給客服。");
+                showToast("✅ 付款成功！訂單明細已自動傳送。");
               })
               .catch(err => {
                 console.error("LIFF 傳送失敗:", err);
-                showToast("✅ 付款成功！(自動傳送失敗，請手動聯絡客服)");
+                showToast("✅ 付款成功！(自動傳送失敗，請手動截圖給客服)");
               });
           } else {
             showToast("✅ 付款成功！訂單已確認。");
@@ -631,7 +633,6 @@
               lineMessageText += `   [🎁 贈品: ${promo.gift} x${item.quantity}]\n`;
             }
 
-            // ✅ V1.30.0: 確保前端傳送至 GAS 的格式也完全 100% 鎖死 23 欄與指定字串
             gasRows.push([
               '自訂交易', 
               '0', 
@@ -644,8 +645,8 @@
               item.quantity, 
               rowSubtotal, 
               '', 
-              '貨到付款',           // 鎖死
-              '新竹物流[代收]',       // 鎖死
+              userProfile.paymentMethod || '',       
+              userProfile.shippingMethod || '',      
               userProfile.address || '', 
               userProfile.buyerNote || '', 
               '', 
@@ -685,6 +686,7 @@
               }).catch(e => console.error("GAS 傳送錯誤", e));
             }
 
+            // ✅ V1.32.0: 捨棄導向官方帳號，改回原本的直接發送，杜絕竄改
             if (isLiffReady && liff.isInClient()) {
               try {
                 showToast("處理中，請稍候...");
@@ -693,9 +695,10 @@
                 setTimeout(() => { liff.closeWindow(); }, 1500);
               } catch (liffError) {
                 console.error("LIFF 傳送失敗:", liffError);
+                showToast("傳送失敗，請確認是否在官方帳號內開啟。");
               }
             } else {
-              showToast("⚠️ 未使用 LIFF 開啟，轉為手動發送...");
+              showToast("⚠️ 未使用 LINE APP 開啟，轉為手動發送...");
               setTimeout(() => {
                 const encodedMessage = encodeURIComponent(lineMessageText);
                 window.location.href = `https://line.me/R/oaMessage/${LINE_OA_ID}/?${encodedMessage}`;
@@ -907,7 +910,7 @@
           </main>
 
           <div className="text-center text-[10px] text-gray-400 pb-2">
-            系統狀態: {liffStatus} | V1.30.0
+            系統狀態: {liffStatus} | V1.32.0
           </div>
 
           {cart.length > 0 && !showCart && (
@@ -980,8 +983,14 @@
                     <div className="space-y-4">
                       {!checkoutStep ? (
                         <>
+                          {/* ✅ V1.32.0: 購物車防錯傳警告標語 */}
+                          <div className="bg-red-50 border border-red-200 text-red-600 px-3 py-2 rounded-lg text-xs sm:text-sm font-bold flex items-start gap-2 mb-2 shadow-sm animate-scale-in">
+                            <i className="fas fa-exclamation-triangle mt-0.5 text-lg"></i>
+                            <span>⚠️ 確保訂單建立，請確認您目前是在「肥貓客棧官方帳號」內開啟此目錄唷！</span>
+                          </div>
+
                           {cart.some(item => item.promotion) && (
-                            <div className="bg-red-50 border border-red-200 text-red-600 px-3 py-2 rounded-lg text-xs sm:text-sm font-bold flex items-center gap-2 mb-2 shadow-sm animate-scale-in">
+                            <div className="bg-orange-50 border border-orange-200 text-orange-600 px-3 py-2 rounded-lg text-xs sm:text-sm font-bold flex items-center gap-2 mb-2 shadow-sm animate-scale-in">
                               <i className="fas fa-bullhorn text-lg"></i>
                               <span>您選購的商品包含專屬活動，結帳已為您享相關優惠！</span>
                             </div>
@@ -1247,7 +1256,6 @@
                             <span className="text-orange-600">${order.totalAmount}</span>
                           </div>
 
-                          {/* ✅ V1.30.0: 移除重新付款按鈕，套用紅色警告標語 */}
                           {order.status === '未付款' && (
                             <div className="mt-4 pt-4 border-t border-gray-100">
                               <p className="text-sm text-red-600 font-bold text-center">【付款失敗，請重新下單】</p>
